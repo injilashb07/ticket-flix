@@ -1,74 +1,129 @@
+
 <?php
 
 include("config.php");
 include("header.php");
 
+
+/* =========================================================
+   CHECK MOVIE ID
+========================================================= */
+
 if (!isset($_GET['id']) || empty($_GET['id'])) {
+
     echo '
     <div class="section">
+
         <div class="alert">
+
             <i class="fa-solid fa-circle-exclamation"></i>
+
             Movie not found.
+
         </div>
+
     </div>
     ';
+
     include("footer.php");
+
     exit;
 }
 
+
 $movie_id = intval($_GET['id']);
 
-$sql = "SELECT * FROM movies WHERE id = $movie_id LIMIT 1";
+
+/* =========================================================
+   GET MOVIE DETAILS
+========================================================= */
+
+$sql = "
+    SELECT *
+    FROM movies
+    WHERE id = $movie_id
+    LIMIT 1
+";
 
 $result = mysqli_query($conn, $sql);
+
 
 if (!$result || mysqli_num_rows($result) == 0) {
 
     echo '
     <div class="section">
+
         <div class="alert">
+
             <i class="fa-solid fa-film"></i>
+
             Sorry! This movie does not exist.
+
         </div>
+
     </div>
     ';
 
     include("footer.php");
+
     exit;
 }
+
 
 $movie = mysqli_fetch_assoc($result);
 
 
-/* Movie values */
+/* =========================================================
+   MOVIE VALUES
+========================================================= */
 
 $name = $movie['name'];
+
 $genre = $movie['genre'];
+
 $language = $movie['language'];
+
 $duration = $movie['duration'];
+
 $rating = $movie['rating'];
+
 $status = $movie['status'];
+
 $description = $movie['description'];
+
 $release_date = $movie['release_date'];
+
 $poster = $movie['poster_image'];
+
 $trailer = $movie['trailer'];
 
 
-/* Default image if poster is empty */
+/* =========================================================
+   DEFAULT POSTER
+========================================================= */
 
 if (empty($poster)) {
 
-    $poster = "https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?auto=format&fit=crop&w=900&q=80";
+    $poster =
+        "https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?auto=format&fit=crop&w=900&q=80";
 
 }
 
 ?>
 
+
+<!-- =========================================================
+     MOVIE DETAILS
+========================================================= -->
+
 <section class="movie-details-section">
 
     <div class="movie-details-container">
 
-        <!-- LEFT : POSTER -->
+
+        <!-- =================================================
+             LEFT : POSTER
+        ================================================== -->
 
         <div class="movie-details-poster">
 
@@ -76,6 +131,7 @@ if (empty($poster)) {
                 src="<?php echo htmlspecialchars($poster); ?>"
                 alt="<?php echo htmlspecialchars($name); ?>"
             >
+
 
             <div class="poster-badge">
 
@@ -88,9 +144,15 @@ if (empty($poster)) {
         </div>
 
 
-        <!-- RIGHT : DETAILS -->
+
+        <!-- =================================================
+             RIGHT : DETAILS
+        ================================================== -->
 
         <div class="movie-details-content">
+
+
+            <!-- MOVIE STATUS -->
 
             <div class="movie-status">
 
@@ -98,17 +160,48 @@ if (empty($poster)) {
 
                 if ($status == "coming_soon") {
 
-                    echo '<span class="status-coming">
-                            <i class="fa-solid fa-clock"></i>
-                            Coming Soon
-                          </span>';
+                    echo '
+                    <span class="status-coming">
 
-                } else {
+                        <i class="fa-solid fa-clock"></i>
 
-                    echo '<span class="status-now">
-                            <i class="fa-solid fa-circle"></i>
-                            Now Showing
-                          </span>';
+                        Coming Soon
+
+                    </span>
+                    ';
+
+                } elseif ($status == "now_showing") {
+
+                    echo '
+                    <span class="status-now">
+
+                        <i class="fa-solid fa-circle"></i>
+
+                        Now Showing
+
+                    </span>
+                    ';
+
+                } elseif ($status == "expired") {
+
+                    echo '
+                    <span
+                        class="status-expired"
+                        style="
+                            color:#ff8175;
+                            background:rgba(231,76,60,.10);
+                            padding:7px 12px;
+                            border-radius:20px;
+                            font-size:12px;
+                        "
+                    >
+
+                        <i class="fa-solid fa-circle-xmark"></i>
+
+                        No Longer Showing
+
+                    </span>
+                    ';
 
                 }
 
@@ -117,99 +210,185 @@ if (empty($poster)) {
             </div>
 
 
+
+            <!-- MOVIE NAME -->
+
             <h1>
+
                 <?php echo htmlspecialchars($name); ?>
+
             </h1>
 
 
+
+            <!-- MOVIE TAGS -->
+
             <div class="movie-tags">
 
+
                 <span>
+
                     <i class="fa-solid fa-film"></i>
+
                     <?php echo htmlspecialchars($genre); ?>
+
                 </span>
 
+
                 <span>
+
                     <i class="fa-solid fa-language"></i>
+
                     <?php echo htmlspecialchars($language); ?>
+
                 </span>
 
+
                 <span>
+
                     <i class="fa-regular fa-clock"></i>
-                    <?php echo htmlspecialchars($duration); ?> min
+
+                    <?php echo htmlspecialchars($duration); ?>
+
+                    min
+
                 </span>
+
 
             </div>
 
 
+
+            <!-- RATING -->
+
             <div class="movie-rating-box">
+
 
                 <div class="big-rating">
 
                     <i class="fa-solid fa-star"></i>
 
+
                     <strong>
+
                         <?php echo htmlspecialchars($rating); ?>
+
                     </strong>
 
-                    <small>/ 10</small>
+
+                    <small>
+
+                        / 10
+
+                    </small>
 
                 </div>
+
 
                 <div>
-                    <p>IMDb Rating</p>
+
+                    <p>
+
+                        IMDb Rating
+
+                    </p>
+
                 </div>
+
 
             </div>
 
+
+
+            <!-- DESCRIPTION -->
 
             <?php if (!empty($description)) { ?>
 
                 <div class="movie-description">
 
+
                     <h3>
+
                         <i class="fa-solid fa-align-left"></i>
+
                         About the Movie
+
                     </h3>
 
+
                     <p>
-                        <?php echo nl2br(htmlspecialchars($description)); ?>
+
+                        <?php
+
+                        echo nl2br(
+                            htmlspecialchars($description)
+                        );
+
+                        ?>
+
                     </p>
+
 
                 </div>
 
             <?php } ?>
 
+
+
+            <!-- RELEASE DATE -->
 
             <?php if (!empty($release_date)) { ?>
 
                 <div class="release-info">
 
+
                     <i class="fa-regular fa-calendar"></i>
+
 
                     <div>
 
-                        <small>Release Date</small>
+
+                        <small>
+
+                            Release Date
+
+                        </small>
+
 
                         <strong>
+
                             <?php
+
                             echo date(
                                 "d M Y",
                                 strtotime($release_date)
                             );
+
                             ?>
+
                         </strong>
 
+
                     </div>
+
 
                 </div>
 
             <?php } ?>
 
 
+
+            <!-- =================================================
+                 MOVIE ACTIONS
+            ================================================== -->
+
             <div class="movie-actions">
 
-                <?php if ($status != "coming_soon") { ?>
+
+                <!-- NOW SHOWING -->
+
+                <?php if ($status == "now_showing") { ?>
+
 
                     <a
                         href="showtimes.php?movie_id=<?php echo $movie_id; ?>"
@@ -222,7 +401,11 @@ if (empty($poster)) {
 
                     </a>
 
-                <?php } else { ?>
+
+                <!-- COMING SOON -->
+
+                <?php } elseif ($status == "coming_soon") { ?>
+
 
                     <button
                         class="btn btn-disabled large-btn"
@@ -235,10 +418,32 @@ if (empty($poster)) {
 
                     </button>
 
+
+                <!-- EXPIRED -->
+
+                <?php } elseif ($status == "expired") { ?>
+
+
+                    <button
+                        class="btn btn-disabled large-btn"
+                        disabled
+                    >
+
+                        <i class="fa-solid fa-circle-xmark"></i>
+
+                        No Longer Showing
+
+                    </button>
+
+
                 <?php } ?>
 
 
+
+                <!-- TRAILER -->
+
                 <?php if (!empty($trailer)) { ?>
+
 
                     <a
                         href="<?php echo htmlspecialchars($trailer); ?>"
@@ -252,9 +457,12 @@ if (empty($poster)) {
 
                     </a>
 
+
                 <?php } ?>
 
+
             </div>
+
 
         </div>
 
@@ -263,87 +471,169 @@ if (empty($poster)) {
 </section>
 
 
-<!-- MOVIE EXPERIENCE -->
+
+<!-- =========================================================
+     MOVIE EXPERIENCE
+========================================================= -->
 
 <section class="section">
 
+
     <div class="section-title">
 
+
         <h2>
-            Why Watch <span><?php echo htmlspecialchars($name); ?>?</span>
+
+            Why Watch
+
+            <span>
+
+                <?php echo htmlspecialchars($name); ?>
+
+            </span>
+
+            ?
+
         </h2>
 
+
         <p>
+
             Get ready for an amazing movie experience.
+
         </p>
 
+
     </div>
+
 
 
     <div class="movie-features">
 
+
+        <!-- PREMIUM SEATS -->
+
         <div class="feature-box">
 
+
             <div class="feature-icon">
+
                 <i class="fa-solid fa-couch"></i>
+
             </div>
 
-            <h3>Premium Seats</h3>
+
+            <h3>
+
+                Premium Seats
+
+            </h3>
+
 
             <p>
+
                 Choose from Standard, Recliner and VIP seats.
+
             </p>
+
 
         </div>
 
 
+
+        <!-- THEATERS -->
+
         <div class="feature-box">
 
+
             <div class="feature-icon">
+
                 <i class="fa-solid fa-building"></i>
+
             </div>
 
-            <h3>Multiple Theaters</h3>
+
+            <h3>
+
+                Multiple Theaters
+
+            </h3>
+
 
             <p>
+
                 Select your preferred theater and showtime.
+
             </p>
+
 
         </div>
 
 
+
+        <!-- EASY BOOKING -->
+
         <div class="feature-box">
 
+
             <div class="feature-icon">
+
                 <i class="fa-solid fa-ticket"></i>
+
             </div>
 
-            <h3>Easy Booking</h3>
+
+            <h3>
+
+                Easy Booking
+
+            </h3>
+
 
             <p>
+
                 Book your tickets quickly and securely.
+
             </p>
+
 
         </div>
 
+
+
+        <!-- DIGITAL TICKET -->
 
         <div class="feature-box">
 
+
             <div class="feature-icon">
+
                 <i class="fa-solid fa-mobile-screen"></i>
+
             </div>
 
-            <h3>Digital Ticket</h3>
+
+            <h3>
+
+                Digital Ticket
+
+            </h3>
+
 
             <p>
+
                 Get your booking reference instantly.
+
             </p>
 
+
         </div>
+
 
     </div>
 
 </section>
+
 
 
 <?php include("footer.php"); ?>

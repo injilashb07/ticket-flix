@@ -1,8 +1,19 @@
+
 <?php
+
+/* =========================================================
+   START SESSION
+========================================================= */
 
 session_start();
 
+
+/* =========================================================
+   DATABASE CONNECTION
+========================================================= */
+
 require_once "../config.php";
+
 
 /* =========================================================
    ADMIN LOGIN CHECK
@@ -38,7 +49,6 @@ if (!$stmt) {
 }
 
 $stmt->bind_param("i", $admin_id);
-
 $stmt->execute();
 
 $result = $stmt->get_result();
@@ -174,11 +184,6 @@ if ($result) {
    6. PROFIT SETTINGS
 ========================================================= */
 
-/*
-    For project/demo purpose:
-    20% of confirmed revenue is considered profit.
-*/
-
 $profit_percentage = 20;
 
 
@@ -194,22 +199,6 @@ $total_profit =
 /* =========================================================
    8. THEATER REVENUE
 ========================================================= */
-
-/*
-    Correct relationship:
-
-    bookings
-        ↓
-    showtimes
-        ↓
-    screens
-        ↓
-    theaters
-
-    IMPORTANT:
-    showtimes DOES NOT contain theater_id.
-    It contains screen_id.
-*/
 
 $theater_sql = "
 
@@ -248,7 +237,6 @@ $theater_sql = "
     ORDER BY revenue DESC
 
 ";
-
 
 $theater_result = $conn->query($theater_sql);
 
@@ -304,7 +292,6 @@ $recent_sql = "
 
 ";
 
-
 $recent_result = $conn->query($recent_sql);
 
 
@@ -316,8 +303,10 @@ $top_theater_name = "No Data";
 
 $top_theater_revenue = 0;
 
-
-if ($theater_result && $theater_result->num_rows > 0) {
+if (
+    $theater_result &&
+    $theater_result->num_rows > 0
+) {
 
     $theater_result->data_seek(0);
 
@@ -376,13 +365,9 @@ if ($theater_result && $theater_result->num_rows > 0) {
 ========================================================= */
 
 * {
-
     margin: 0;
-
     padding: 0;
-
     box-sizing: border-box;
-
 }
 
 
@@ -429,12 +414,9 @@ body {
 
     top: 0;
 
-    background:
-
-        rgba(18,12,28,.98);
+    background: rgba(18,12,28,.98);
 
     border-right:
-
         1px solid
         rgba(212,175,55,.18);
 
@@ -524,11 +506,9 @@ body {
 
 
 .sidebar a:hover,
-
 .sidebar a.active {
 
     background:
-
         rgba(212,175,55,.12);
 
     color: #d4af37;
@@ -676,11 +656,9 @@ body {
     border-radius: 20px;
 
     background:
-
         rgba(255,255,255,.055);
 
     border:
-
         1px solid
         rgba(255,255,255,.08);
 
@@ -691,8 +669,7 @@ body {
 
 .stat-card:hover {
 
-    transform:
-        translateY(-4px);
+    transform: translateY(-4px);
 
     border-color:
         rgba(212,175,55,.3);
@@ -728,7 +705,6 @@ body {
     justify-content: center;
 
     background:
-
         rgba(212,175,55,.12);
 
     color: #d4af37;
@@ -835,7 +811,6 @@ body {
     justify-content: center;
 
     background:
-
         rgba(212,175,55,.12);
 
     color: #d4af37;
@@ -896,8 +871,7 @@ body {
     width:
         <?php echo min($profit_percentage,100); ?>%;
 
-    background:
-        #d4af37;
+    background: #d4af37;
 
     border-radius: 20px;
 
@@ -927,11 +901,9 @@ body {
 .panel {
 
     background:
-
         rgba(255,255,255,.05);
 
     border:
-
         1px solid
         rgba(255,255,255,.08);
 
@@ -1011,7 +983,6 @@ th {
     padding: 12px 8px;
 
     border-bottom:
-
         1px solid
         rgba(255,255,255,.08);
 
@@ -1027,7 +998,6 @@ td {
     color: #ccc;
 
     border-bottom:
-
         1px solid
         rgba(255,255,255,.05);
 
@@ -1086,7 +1056,6 @@ td {
     color: #61e69b;
 
     background:
-
         rgba(46,204,113,.10);
 
 }
@@ -1097,7 +1066,6 @@ td {
     color: #f1d46a;
 
     background:
-
         rgba(241,196,15,.10);
 
 }
@@ -1108,7 +1076,6 @@ td {
     color: #ff8175;
 
     background:
-
         rgba(231,76,60,.10);
 
 }
@@ -1132,7 +1099,6 @@ td {
     padding: 15px 0;
 
     border-bottom:
-
         1px solid
         rgba(255,255,255,.06);
 
@@ -1235,11 +1201,9 @@ td {
     text-align: center;
 
     background:
-
         rgba(255,255,255,.04);
 
     border:
-
         1px solid
         rgba(255,255,255,.07);
 
@@ -1252,8 +1216,7 @@ td {
 
     border-color: #d4af37;
 
-    transform:
-        translateY(-3px);
+    transform: translateY(-3px);
 
 }
 
@@ -1301,7 +1264,6 @@ td {
         );
 
     border:
-
         1px solid
         rgba(212,175,55,.18);
 
@@ -1536,6 +1498,23 @@ td {
     </a>
 
 
+    <!-- ADD MOVIE -->
+
+    <a href="add_movie.php">
+
+        <i class="fa-solid fa-circle-plus"></i>
+
+        <span>Add Movie</span>
+
+    </a>
+
+
+    <a href="manage_movies.php">
+    <i class="fa-solid fa-film"></i>
+    <span>Manage Movies</span>
+</a>
+
+
     <!-- THEATERS -->
 
     <a href="../theaters.php">
@@ -1593,9 +1572,7 @@ td {
 <main class="main">
 
 
-    <!-- =================================================
-         TOP BAR
-    ================================================= -->
+    <!-- TOP BAR -->
 
     <div class="topbar">
 
@@ -1670,9 +1647,7 @@ td {
     </div>
 
 
-    <!-- =================================================
-         BASIC STATISTICS
-    ================================================= -->
+    <!-- BASIC STATISTICS -->
 
     <div class="stats">
 
@@ -1820,9 +1795,7 @@ td {
     </div>
 
 
-    <!-- =================================================
-         FINANCE CARDS
-    ================================================= -->
+    <!-- FINANCE CARDS -->
 
     <div class="finance-grid">
 
@@ -1955,16 +1928,12 @@ td {
     </div>
 
 
-    <!-- =================================================
-         MAIN CONTENT
-    ================================================= -->
+    <!-- MAIN CONTENT -->
 
     <div class="content-grid">
 
 
-        <!-- =================================================
-             LEFT SIDE
-        ================================================= -->
+        <!-- LEFT SIDE -->
 
         <div>
 
@@ -2061,8 +2030,6 @@ td {
                                 <tr>
 
 
-                                    <!-- REFERENCE -->
-
                                     <td>
 
                                         <strong
@@ -2079,8 +2046,6 @@ td {
 
                                     </td>
 
-
-                                    <!-- CUSTOMER -->
 
                                     <td>
 
@@ -2099,8 +2064,6 @@ td {
                                     </td>
 
 
-                                    <!-- MOVIE -->
-
                                     <td>
 
                                         <div class="movie-name">
@@ -2114,8 +2077,6 @@ td {
                                     </td>
 
 
-                                    <!-- THEATER -->
-
                                     <td>
 
                                         <div class="theater-name">
@@ -2128,8 +2089,6 @@ td {
 
                                     </td>
 
-
-                                    <!-- AMOUNT -->
 
                                     <td>
 
@@ -2146,8 +2105,6 @@ td {
 
                                     </td>
 
-
-                                    <!-- STATUS -->
 
                                     <td>
 
@@ -2382,9 +2339,7 @@ td {
         </div>
 
 
-        <!-- =================================================
-             RIGHT SIDE
-        ================================================= -->
+        <!-- RIGHT SIDE -->
 
         <div>
 
@@ -2408,6 +2363,35 @@ td {
 
                 <div class="quick-actions">
 
+                
+
+
+                    <!-- ADD MOVIE -->
+
+                    <a
+                        href="add_movie.php"
+                        class="quick-action"
+                    >
+
+                        <i class="fa-solid fa-circle-plus"></i>
+
+                        <span>
+                            Add Movie
+                        </span>
+
+                    </a>
+
+                    <a
+    href="manage_movies.php"
+    class="quick-action"
+>
+    <i class="fa-solid fa-film"></i>
+
+    <span>
+        Manage Movies
+    </span>
+</a>
+
 
                     <!-- USERS -->
 
@@ -2416,9 +2400,7 @@ td {
                         class="quick-action"
                     >
 
-                        <i
-                            class="fa-solid fa-users"
-                        ></i>
+                        <i class="fa-solid fa-users"></i>
 
                         <span>
                             Manage Users
@@ -2434,9 +2416,7 @@ td {
                         class="quick-action"
                     >
 
-                        <i
-                            class="fa-solid fa-ticket"
-                        ></i>
+                        <i class="fa-solid fa-ticket"></i>
 
                         <span>
                             Manage Bookings
@@ -2452,9 +2432,7 @@ td {
                         class="quick-action"
                     >
 
-                        <i
-                            class="fa-solid fa-film"
-                        ></i>
+                        <i class="fa-solid fa-film"></i>
 
                         <span>
                             View Movies
@@ -2470,9 +2448,7 @@ td {
                         class="quick-action"
                     >
 
-                        <i
-                            class="fa-solid fa-building"
-                        ></i>
+                        <i class="fa-solid fa-building"></i>
 
                         <span>
                             View Theaters
@@ -2488,9 +2464,7 @@ td {
                         class="quick-action"
                     >
 
-                        <i
-                            class="fa-solid fa-clock"
-                        ></i>
+                        <i class="fa-solid fa-clock"></i>
 
                         <span>
                             View Showtimes
@@ -2506,9 +2480,7 @@ td {
                         class="quick-action"
                     >
 
-                        <i
-                            class="fa-solid fa-globe"
-                        ></i>
+                        <i class="fa-solid fa-globe"></i>
 
                         <span>
                             View Website
@@ -2612,3 +2584,4 @@ td {
 </body>
 
 </html>
+
