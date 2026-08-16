@@ -34,7 +34,7 @@ $conn = new mysqli(
 if ($conn->connect_error) {
 
     die(
-        "Database Connectio Failed: "
+        "Database Connection Failed: "
         . $conn->connect_error
     );
 
