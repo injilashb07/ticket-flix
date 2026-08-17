@@ -1,9 +1,11 @@
+
 <?php
 
 session_start();
 
 require_once "../config.php";
 
+/* If already logged in */
 if (isset($_SESSION['theater_user_id'])) {
     header("Location: dashboard.php");
     exit();
@@ -14,7 +16,7 @@ $error = "";
 if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
     $email = trim($_POST['email'] ?? '');
-    $password = $_POST['password'] ?? '';
+    $password = trim($_POST['password'] ?? '');
 
     if ($email === "" || $password === "") {
 
@@ -22,76 +24,122 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
     } else {
 
+        /*
+         * Find theater user
+         */
         $stmt = $conn->prepare("
-            SELECT 
-                tu.id,
-                tu.theater_id,
-                tu.name,
-                tu.email,
-                tu.password,
-                tu.is_active,
-                t.name AS theater_name
-            FROM theater_users tu
-            INNER JOIN theaters t
-                ON tu.theater_id = t.id
-            WHERE tu.email = ?
+            SELECT
+                id,
+                theater_id,
+                name,
+                email,
+                password,
+                is_active
+            FROM theater_users
+            WHERE email = ?
             LIMIT 1
         ");
+
+        if (!$stmt) {
+            die("Database query error: " . $conn->error);
+        }
 
         $stmt->bind_param("s", $email);
         $stmt->execute();
 
-        $result = $stmt->get_result();
+        $stmt->store_result();
 
-        if ($result->num_rows === 1) {
+        if ($stmt->num_rows === 1) {
 
-            $user = $result->fetch_assoc();
+            $stmt->bind_result(
+                $id,
+                $theater_id,
+                $name,
+                $db_email,
+                $db_password,
+                $is_active
+            );
 
-            if ((int)$user['is_active'] !== 1) {
+            $stmt->fetch();
+
+            /* Check account active */
+            if ((int)$is_active !== 1) {
 
                 $error = "Your theater account is inactive.";
 
             } else {
 
                 /*
-                 * Supports both password_hash() passwords
-                 * and normal text passwords.
+                 * Supports:
+                 * 1. Normal text password
+                 * 2. password_hash() password
                  */
 
                 $valid_password = false;
 
-                if (
-                    password_get_info($user['password'])['algo'] !== 0
+                /* Normal text password */
+                if ($password === $db_password) {
+
+                    $valid_password = true;
+
+                }
+
+                /* Hashed password */
+                elseif (
+                    password_get_info($db_password)['algo'] !== 0 &&
+                    password_verify($password, $db_password)
                 ) {
 
-                    $valid_password = password_verify(
-                        $password,
-                        $user['password']
-                    );
-
-                } else {
-
-                    $valid_password =
-                        ($password === $user['password']);
+                    $valid_password = true;
 
                 }
 
                 if ($valid_password) {
 
+                    /*
+                     * Get theater name
+                     */
+                    $theater_stmt = $conn->prepare("
+                        SELECT name
+                        FROM theaters
+                        WHERE id = ?
+                        LIMIT 1
+                    ");
+
+                    $theater_stmt->bind_param("i", $theater_id);
+                    $theater_stmt->execute();
+
+                    $theater_stmt->store_result();
+
+                    if ($theater_stmt->num_rows === 1) {
+
+                        $theater_stmt->bind_result($theater_name);
+                        $theater_stmt->fetch();
+
+                    } else {
+
+                        $theater_name = "Theater";
+
+                    }
+
+                    $theater_stmt->close();
+
+
+                    /*
+                     * Create secure session
+                     */
                     session_regenerate_id(true);
 
-                    $_SESSION['theater_user_id'] =
-                        $user['id'];
+                    $_SESSION['theater_user_id'] = $id;
+                    $_SESSION['theater_id'] = $theater_id;
+                    $_SESSION['theater_name'] = $theater_name;
+                    $_SESSION['theater_user_name'] = $name;
+                    $_SESSION['theater_email'] = $db_email;
 
-                    $_SESSION['theater_id'] =
-                        $user['theater_id'];
 
-                    $_SESSION['theater_name'] =
-                        $user['theater_name'];
-
-                    $_SESSION['theater_user_name'] =
-                        $user['name'];
-
+                    /*
+                     * Go to dashboard
+                     */
                     header("Location: dashboard.php");
                     exit();
 
@@ -114,6 +162,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
 ?>
 
+
 <!DOCTYPE html>
 <html lang="en">
 
@@ -121,21 +170,18 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
 <meta charset="UTF-8">
 
-<meta
-    name="viewport"
-    content="width=device-width, initial-scale=1.0"
->
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 
 <title>Theater Login | TicketFlix</title>
 
 <link
-    href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&display=swap"
-    rel="stylesheet"
+href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&display=swap"
+rel="stylesheet"
 >
 
 <link
-    rel="stylesheet"
-    href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css"
+rel="stylesheet"
+href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css"
 >
 
 <style>
@@ -175,18 +221,15 @@ body {
 
     max-width: 92%;
 
-    background:
-        rgba(255,255,255,.06);
+    background: rgba(255,255,255,.06);
 
-    border:
-        1px solid rgba(212,175,55,.25);
+    border: 1px solid rgba(212,175,55,.25);
 
     border-radius: 25px;
 
     padding: 35px;
 
-    box-shadow:
-        0 20px 60px rgba(0,0,0,.4);
+    box-shadow: 0 20px 60px rgba(0,0,0,.4);
 }
 
 .logo {
@@ -233,8 +276,7 @@ body {
 
     justify-content: center;
 
-    background:
-        rgba(212,175,55,.12);
+    background: rgba(212,175,55,.12);
 
     color: #d4af37;
 
@@ -283,11 +325,9 @@ body {
 
     border-radius: 10px;
 
-    border:
-        1px solid rgba(255,255,255,.1);
+    border: 1px solid rgba(255,255,255,.1);
 
-    background:
-        rgba(0,0,0,.25);
+    background: rgba(0,0,0,.25);
 
     color: white;
 
@@ -337,11 +377,9 @@ body {
 
     margin-bottom: 18px;
 
-    background:
-        rgba(231,76,60,.12);
+    background: rgba(231,76,60,.12);
 
-    border:
-        1px solid rgba(231,76,60,.25);
+    border: 1px solid rgba(231,76,60,.25);
 
     color: #ff8175;
 
@@ -372,24 +410,31 @@ body {
 
 </head>
 
+
 <body>
 
 <div class="login-container">
 
     <div class="login-icon">
+
         <i class="fa-solid fa-building"></i>
+
     </div>
+
 
     <div class="logo">
 
         <i class="fa-solid fa-ticket"></i>
+
         Ticket<span>Flix</span>
 
     </div>
 
+
     <p class="subtitle">
         Theater Management Portal
     </p>
+
 
     <?php if ($error !== "") { ?>
 
@@ -402,6 +447,7 @@ body {
         </div>
 
     <?php } ?>
+
 
     <form method="POST">
 
@@ -417,12 +463,14 @@ body {
                     type="email"
                     name="email"
                     placeholder="Enter theater email"
+                    autocomplete="email"
                     required
                 >
 
             </div>
 
         </div>
+
 
         <div class="form-group">
 
@@ -436,12 +484,14 @@ body {
                     type="password"
                     name="password"
                     placeholder="Enter password"
+                    autocomplete="current-password"
                     required
                 >
 
             </div>
 
         </div>
+
 
         <button type="submit" class="btn">
 
@@ -452,6 +502,7 @@ body {
         </button>
 
     </form>
+
 
     <a href="../index.php" class="back">
 
