@@ -1,95 +1,272 @@
 <?php
+
 session_start();
 
 require_once 'config.php';
+require_once 'send_booking_email.php';
+
+use PHPMailer\PHPMailer\PHPMailer;
+use PHPMailer\PHPMailer\Exception;
+
+require_once __DIR__ . '/PHPMailer/src/Exception.php';
+require_once __DIR__ . '/PHPMailer/src/PHPMailer.php';
+require_once __DIR__ . '/PHPMailer/src/SMTP.php';
 
 
-/* =========================================================
-   1. CHECK LOGIN
-========================================================= */
+/*
+|--------------------------------------------------------------------------
+| LOGIN CHECK
+|--------------------------------------------------------------------------
+*/
 
 if (!isset($_SESSION['user_id'])) {
-    die("User session not found. Please login again.");
+
+    header("Location: login.php");
+    exit();
+
 }
+
+
+/*
+|--------------------------------------------------------------------------
+| USER ID
+|--------------------------------------------------------------------------
+*/
 
 $user_id = (int) $_SESSION['user_id'];
 
 
-/* =========================================================
-   2. CHECK POST DATA
-========================================================= */
+/*
+|--------------------------------------------------------------------------
+| USER EMAIL
+|--------------------------------------------------------------------------
+*/
+
+$user_email = '';
 
 if (
-    !isset($_POST['showtime_id']) ||
-    !isset($_POST['seat_ids']) ||
-    !is_numeric($_POST['showtime_id']) ||
-    !is_array($_POST['seat_ids'])
+    isset($_SESSION['email']) &&
+    filter_var($_SESSION['email'], FILTER_VALIDATE_EMAIL)
 ) {
 
-    header("Location: showtimes.php");
-    exit();
+    $user_email = trim($_SESSION['email']);
+
+} elseif (
+    isset($_SESSION['user_email']) &&
+    filter_var($_SESSION['user_email'], FILTER_VALIDATE_EMAIL)
+) {
+
+    $user_email = trim($_SESSION['user_email']);
+
+} else {
+
+    $user_stmt = $conn->prepare("
+        SELECT email
+        FROM users
+        WHERE id = ?
+        LIMIT 1
+    ");
+
+    if ($user_stmt) {
+
+        $user_stmt->bind_param(
+            "i",
+            $user_id
+        );
+
+        $user_stmt->execute();
+
+        $user_result =
+            $user_stmt->get_result();
+
+        $user_data =
+            $user_result->fetch_assoc();
+
+        if (
+            $user_data &&
+            !empty($user_data['email']) &&
+            filter_var(
+                $user_data['email'],
+                FILTER_VALIDATE_EMAIL
+            )
+        ) {
+
+            $user_email =
+                trim($user_data['email']);
+
+            $_SESSION['email'] =
+                $user_email;
+
+        }
+
+        $user_stmt->close();
+
+    }
 
 }
 
 
-$showtime_id = (int) $_POST['showtime_id'];
+/*
+|--------------------------------------------------------------------------
+| BASIC VARIABLES
+|--------------------------------------------------------------------------
+*/
 
-$seat_ids = array_map(
-    'intval',
-    $_POST['seat_ids']
-);
+$showtime_id = 0;
+
+$seat_ids = [];
+
+$payment_success = false;
+
+$payment_method = '';
+
+$payment_id = '';
+
+$booking_reference = '';
+
+$booking_id = 0;
+
+$error_message = '';
+
+$email_sent = false;
 
 
-/* Remove duplicate seat IDs */
+/*
+|--------------------------------------------------------------------------
+| GET SHOWTIME ID
+|--------------------------------------------------------------------------
+*/
 
-$seat_ids = array_unique($seat_ids);
+$showtime_id =
+    isset($_POST['showtime_id'])
+        ? (int) $_POST['showtime_id']
+        : (
+            isset($_SESSION['payment_showtime_id'])
+                ? (int) $_SESSION['payment_showtime_id']
+                : 0
+        );
 
 
-/* Remove invalid IDs */
+/*
+|--------------------------------------------------------------------------
+| GET SEAT IDS
+|--------------------------------------------------------------------------
+*/
 
-$seat_ids = array_filter(
-    $seat_ids,
-    function ($id) {
-        return $id > 0;
-    }
-);
+if (
+    isset($_POST['seat_ids']) &&
+    is_array($_POST['seat_ids'])
+) {
+
+    $seat_ids =
+        array_map(
+            'intval',
+            $_POST['seat_ids']
+        );
+
+} elseif (
+    isset($_SESSION['payment_seat_ids']) &&
+    is_array($_SESSION['payment_seat_ids'])
+) {
+
+    $seat_ids =
+        array_map(
+            'intval',
+            $_SESSION['payment_seat_ids']
+        );
+
+}
 
 
-if (empty($seat_ids)) {
+$seat_ids =
+    array_values(
+        array_unique(
+            array_filter(
+                $seat_ids,
+                function ($id) {
 
-    header(
-        "Location: seats.php?showtime_id=" .
-        $showtime_id
+                    return $id > 0;
+
+                }
+            )
+        )
     );
 
-    exit();
+
+/*
+|--------------------------------------------------------------------------
+| VALIDATE BOOKING INFORMATION
+|--------------------------------------------------------------------------
+*/
+
+if (
+    $showtime_id <= 0 ||
+    empty($seat_ids)
+) {
+
+    die("Invalid booking information.");
 
 }
 
 
-/* =========================================================
-   3. GET SHOWTIME
-========================================================= */
+/*
+|--------------------------------------------------------------------------
+| SAVE BOOKING DATA IN SESSION
+|--------------------------------------------------------------------------
+*/
 
-$sql = "
+$_SESSION['payment_showtime_id'] =
+    $showtime_id;
+
+$_SESSION['payment_seat_ids'] =
+    $seat_ids;
+
+
+/*
+|--------------------------------------------------------------------------
+| GET SHOWTIME DETAILS
+|--------------------------------------------------------------------------
+*/
+
+$stmt = $conn->prepare("
     SELECT
-        id,
-        movie_id,
-        screen_id,
-        show_date,
-        show_time,
-        end_time,
-        price,
-        available_seats
-    FROM showtimes
-    WHERE id = ?
-";
 
-$stmt = $conn->prepare($sql);
+        st.id,
+        st.show_date,
+        st.show_time,
+        st.price,
+
+        m.name AS movie_name,
+
+        s.screen_name,
+
+        t.name AS theater_name,
+        t.city,
+        t.state
+
+    FROM showtimes st
+
+    INNER JOIN movies m
+        ON st.movie_id = m.id
+
+    INNER JOIN screens s
+        ON st.screen_id = s.id
+
+    INNER JOIN theaters t
+        ON s.theater_id = t.id
+
+    WHERE st.id = ?
+
+    LIMIT 1
+");
+
 
 if (!$stmt) {
-    die("Showtime query error: " . $conn->error);
+
+    die("Database error.");
+
 }
+
 
 $stmt->bind_param(
     "i",
@@ -98,9 +275,11 @@ $stmt->bind_param(
 
 $stmt->execute();
 
-$result = $stmt->get_result();
+$result =
+    $stmt->get_result();
 
-$showtime = $result->fetch_assoc();
+$showtime =
+    $result->fetch_assoc();
 
 $stmt->close();
 
@@ -112,318 +291,79 @@ if (!$showtime) {
 }
 
 
-/* =========================================================
-   4. GET MOVIE
-========================================================= */
-
-$movie_name = "Movie";
-
-$sql = "
-    SELECT *
-    FROM movies
-    WHERE id = ?
-";
-
-$stmt = $conn->prepare($sql);
-
-if (!$stmt) {
-    die("Movie query error: " . $conn->error);
-}
-
-$stmt->bind_param(
-    "i",
-    $showtime['movie_id']
-);
-
-$stmt->execute();
-
-$result = $stmt->get_result();
-
-$movie = $result->fetch_assoc();
-
-$stmt->close();
-
-
-if ($movie) {
-
-    if (isset($movie['name'])) {
-
-        $movie_name = $movie['name'];
-
-    } elseif (isset($movie['title'])) {
-
-        $movie_name = $movie['title'];
-
-    } elseif (isset($movie['movie_name'])) {
-
-        $movie_name = $movie['movie_name'];
-
-    }
-
-}
-
-
-/* =========================================================
-   5. GET SCREEN
-========================================================= */
-
-$sql = "
-    SELECT
-        id,
-        theater_id,
-        screen_name,
-        total_seats
-    FROM screens
-    WHERE id = ?
-";
-
-$stmt = $conn->prepare($sql);
-
-if (!$stmt) {
-    die("Screen query error: " . $conn->error);
-}
-
-$stmt->bind_param(
-    "i",
-    $showtime['screen_id']
-);
-
-$stmt->execute();
-
-$result = $stmt->get_result();
-
-$screen = $result->fetch_assoc();
-
-$stmt->close();
-
-
-if (!$screen) {
-
-    die("Screen not found.");
-
-}
-
-
-/* =========================================================
-   6. GET THEATER
-========================================================= */
-
-$sql = "
-    SELECT
-        id,
-        name,
-        address,
-        city,
-        state,
-        zip_code
-    FROM theaters
-    WHERE id = ?
-";
-
-$stmt = $conn->prepare($sql);
-
-if (!$stmt) {
-    die("Theater query error: " . $conn->error);
-}
-
-$stmt->bind_param(
-    "i",
-    $screen['theater_id']
-);
-
-$stmt->execute();
-
-$result = $stmt->get_result();
-
-$theater = $result->fetch_assoc();
-
-$stmt->close();
-
-
-/* =========================================================
-   7. GET SELECTED SEATS
-========================================================= */
-
-$placeholders = implode(
-    ',',
-    array_fill(0, count($seat_ids), '?')
-);
-
-$sql = "
-    SELECT
-        `id`,
-        `screen_id`,
-        `row_number`,
-        `seat_number`,
-        `seat_type`,
-        `is_active`
-    FROM `seats`
-    WHERE `id` IN ($placeholders)
-      AND `screen_id` = ?
-      AND `is_active` = 1
-";
-
-$stmt = $conn->prepare($sql);
-
-if (!$stmt) {
-    die("Seat query error: " . $conn->error);
-}
-
-
-/* ---------------------------------------------------------
-   Bind seat IDs + screen ID
---------------------------------------------------------- */
-
-$params = $seat_ids;
-
-$params[] = (int)$showtime['screen_id'];
-
-$types = str_repeat('i', count($seat_ids)) . 'i';
-
-$bind_params = [];
-
-$bind_params[] = $types;
-
-foreach ($params as $key => $value) {
-    $bind_params[] = &$params[$key];
-}
-
-call_user_func_array(
-    [$stmt, 'bind_param'],
-    $bind_params
-);
-
-
-/* ---------------------------------------------------------
-   Execute
---------------------------------------------------------- */
-
-$stmt->execute();
-
-$result = $stmt->get_result();
-
-$selected_seats = [];
-
-while ($seat = $result->fetch_assoc()) {
-    $selected_seats[] = $seat;
-}
-
-$stmt->close();
-
-
-/* =========================================================
-   8. VALIDATE SEAT COUNT
-========================================================= */
-
-if (
-    count($selected_seats)
-    !== count($seat_ids)
-) {
-
-    die(
-        "One or more selected seats are not available."
-    );
-
-}
-
-
-/* =========================================================
-   9. CHECK ALREADY BOOKED SEATS
-========================================================= */
-
-
 /*
-   Check whether selected seats are already booked
-   for this particular showtime.
+|--------------------------------------------------------------------------
+| GET SELECTED SEATS
+|--------------------------------------------------------------------------
 */
 
-$booked_check_query = "
-    SELECT
-        bs.seat_id
-
-    FROM booking_seats bs
-
-    INNER JOIN bookings b
-        ON bs.booking_id = b.id
-
-    WHERE b.showtime_id = ?
-
-    AND bs.seat_id IN ($placeholders)
-
-    AND (
-        b.booking_status = 'pending'
-        OR b.booking_status = 'confirmed'
-    )
-";
-
-
-$stmt = $conn->prepare(
-    $booked_check_query
-);
-
-if (!$stmt) {
-    die(
-        "Booking check error: " .
-        $conn->error
+$placeholders =
+    implode(
+        ',',
+        array_fill(
+            0,
+            count($seat_ids),
+            '?'
+        )
     );
-}
 
-
-/*
-   showtime_id + seat IDs
-*/
-
-$params2 = [];
-
-$params2[] =
-    $showtime_id;
-
-
-foreach ($seat_ids as $id) {
-
-    $params2[] = $id;
-
-}
-
-
-$types2 =
-    'i' .
+$types =
     str_repeat(
         'i',
         count($seat_ids)
     );
 
 
-$bind_params2 = [];
+$sql = "
+    SELECT
 
-$bind_params2[] = $types2;
+        id,
+        seat_row,
+        seat_number,
+        seat_type
+
+    FROM seats
+
+    WHERE id IN ($placeholders)
+
+    ORDER BY
+        seat_row ASC,
+        seat_number ASC
+";
 
 
-foreach ($params2 as $key => $value) {
+$stmt =
+    $conn->prepare($sql);
 
-    $bind_params2[] = &$params2[$key];
+
+if (!$stmt) {
+
+    die("Seat query error.");
 
 }
 
 
-call_user_func_array(
-    [$stmt, 'bind_param'],
-    $bind_params2
+$stmt->bind_param(
+    $types,
+    ...$seat_ids
 );
-
 
 $stmt->execute();
 
-$result = $stmt->get_result();
+$seat_result =
+    $stmt->get_result();
 
 
-$already_booked = [];
+$selected_seats = [];
 
 
-while ($row = $result->fetch_assoc()) {
+while (
+    $row =
+        $seat_result->fetch_assoc()
+) {
 
-    $already_booked[] =
-        (int) $row['seat_id'];
+    $selected_seats[] =
+        $row;
 
 }
 
@@ -431,690 +371,490 @@ while ($row = $result->fetch_assoc()) {
 $stmt->close();
 
 
-if (!empty($already_booked)) {
+if (empty($selected_seats)) {
 
-    die(
-        "Sorry! One or more selected seats have just been booked. Please go back and select different seats."
-    );
+    die("Selected seats not found.");
 
 }
 
 
-/* =========================================================
-   10. CALCULATE SEAT PRICES
-========================================================= */
+/*
+|--------------------------------------------------------------------------
+| TOTAL
+|--------------------------------------------------------------------------
+*/
 
-$base_price =
+$ticket_price =
     (float) $showtime['price'];
 
+$seat_count =
+    count($selected_seats);
 
-function calculateSeatPrice(
-    $seat_type,
-    $base_price
-) {
+$subtotal =
+    $ticket_price * $seat_count;
 
-    $seat_type =
-        strtolower(
-            trim($seat_type)
-        );
+$booking_fee =
+    0;
 
-
-    if ($seat_type === 'vip') {
-
-        return $base_price * 2;
-
-    }
+$total_amount =
+    $subtotal + $booking_fee;
 
 
-    if ($seat_type === 'recliner') {
-
-        return $base_price * 1.5;
-
-    }
-
-
-    return $base_price;
-
-}
-
-
-$total_amount = 0;
-
-
-foreach (
-    $selected_seats
-    as &$seat
-) {
-
-    $seat['calculated_price'] =
-        calculateSeatPrice(
-            $seat['seat_type'],
-            $base_price
-        );
-
-
-    $total_amount +=
-        $seat['calculated_price'];
-
-}
-
-unset($seat);
-
-
-/* =========================================================
-   11. CREATE BOOKING REFERENCE
-========================================================= */
-
-$booking_reference =
-    'TF' .
-    date('ymd') .
-    strtoupper(
-        substr(
-            uniqid(),
-            -6
-        )
-    );
-
-
-/* =========================================================
-   12. CONFIRM BOOKING
-========================================================= */
+/*
+|--------------------------------------------------------------------------
+| PAYMENT
+|--------------------------------------------------------------------------
+*/
 
 if (
-    isset($_POST['confirm_booking']) &&
-    $_POST['confirm_booking'] === '1'
+    $_SERVER['REQUEST_METHOD'] === 'POST'
 ) {
+
+    $payment_method =
+        isset($_POST['payment_method'])
+            ? trim($_POST['payment_method'])
+            : '';
 
 
     /*
-       START TRANSACTION
+    |--------------------------------------------------------------------------
+    | PAYMENT METHOD VALIDATION
+    |--------------------------------------------------------------------------
     */
 
-    $conn->begin_transaction();
+    if (
+        isset($_POST['pay_now']) &&
+        $_POST['pay_now'] === '1'
+    ) {
 
-
-    try {
-
-
-        /* -------------------------------------------------
-           INSERT BOOKING
-        ------------------------------------------------- */
-
-        $booking_status =
-            'confirmed';
-
-        $payment_status =
-            'completed';
-
-
-        $insert_booking = "
-            INSERT INTO bookings
-            (
-                user_id,
-                showtime_id,
-                total_amount,
-                booking_status,
-                payment_status,
-                booking_reference
+        if (
+            !in_array(
+                $payment_method,
+                [
+                    'card',
+                    'upi',
+                    'netbanking'
+                ],
+                true
             )
-
-            VALUES
-            (
-                ?,
-                ?,
-                ?,
-                ?,
-                ?,
-                ?
-            )
-        ";
-
-
-        $stmt =
-            $conn->prepare(
-                $insert_booking
-            );
-
-
-        if (!$stmt) {
-
-            throw new Exception(
-                "Booking insert error: " .
-                $conn->error
-            );
-
-        }
-
-
-        $stmt->bind_param(
-            "iidsss",
-            $user_id,
-            $showtime_id,
-            $total_amount,
-            $booking_status,
-            $payment_status,
-            $booking_reference
-        );
-
-
-        $stmt->execute();
-
-
-        $booking_id =
-            $conn->insert_id;
-
-
-        $stmt->close();
-
-
-        /* -------------------------------------------------
-           INSERT BOOKING SEATS
-        ------------------------------------------------- */
-
-        $insert_seat = "
-            INSERT INTO booking_seats
-            (
-                booking_id,
-                seat_id,
-                seat_price
-            )
-
-            VALUES
-            (
-                ?,
-                ?,
-                ?
-            )
-        ";
-
-
-        $seat_stmt =
-            $conn->prepare(
-                $insert_seat
-            );
-
-
-        if (!$seat_stmt) {
-
-            throw new Exception(
-                "Booking seat error: " .
-                $conn->error
-            );
-
-        }
-
-
-        foreach (
-            $selected_seats
-            as $seat
         ) {
 
-
-            $seat_id =
-                (int) $seat['id'];
-
-
-            $seat_price =
-                (float)
-                $seat['calculated_price'];
-
-
-            $seat_stmt->bind_param(
-                "iid",
-                $booking_id,
-                $seat_id,
-                $seat_price
-            );
-
-
-            $seat_stmt->execute();
-
-        }
-
-
-        $seat_stmt->close();
-
-
-        /* -------------------------------------------------
-           UPDATE AVAILABLE SEATS
-        ------------------------------------------------- */
-
-        $seat_count =
-            count($selected_seats);
-
-
-        $update_showtime = "
-            UPDATE showtimes
-
-            SET available_seats =
-                GREATEST(
-                    available_seats - ?,
-                    0
-                )
-
-            WHERE id = ?
-        ";
-
-
-        $update_stmt =
-            $conn->prepare(
-                $update_showtime
-            );
-
-
-        if (!$update_stmt) {
-
-            throw new Exception(
-                "Showtime update error: " .
-                $conn->error
-            );
-
-        }
-
-
-        $update_stmt->bind_param(
-            "ii",
-            $seat_count,
-            $showtime_id
-        );
-
-
-        $update_stmt->execute();
-
-        $update_stmt->close();
-
-
-        /* -------------------------------------------------
-           COMMIT
-        ------------------------------------------------- */
-
-        $conn->commit();
-
-
-        /* -------------------------------------------------
-           SUCCESS PAGE
-        ------------------------------------------------- */
-
-        ?>
-
-        <!DOCTYPE html>
-
-        <html lang="en">
-
-        <head>
-
-        <meta charset="UTF-8">
-
-        <meta
-            name="viewport"
-            content="width=device-width, initial-scale=1.0"
-        >
-
-        <title>Booking Confirmed | TicketFlix</title>
-
-
-        <link
-            href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&display=swap"
-            rel="stylesheet"
-        >
-
-
-        <style>
-
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
-
-        body {
-
-            min-height: 100vh;
-
-            display: flex;
-
-            align-items: center;
-
-            justify-content: center;
-
-            font-family: Poppins, sans-serif;
-
-            background:
-                radial-gradient(
-                    circle at top right,
-                    rgba(126,87,194,.25),
-                    transparent 35%
-                ),
-                #100b18;
-
-            color: white;
-
-            padding: 25px;
-        }
-
-
-        .success-card {
-
-            width: 100%;
-
-            max-width: 650px;
-
-            text-align: center;
-
-            padding: 50px 35px;
-
-            border-radius: 30px;
-
-            background:
-                rgba(255,255,255,.06);
-
-            border:
-                1px solid rgba(212,175,55,.25);
-
-            box-shadow:
-                0 25px 70px
-                rgba(0,0,0,.45);
-        }
-
-
-        .success-icon {
-
-            width: 90px;
-
-            height: 90px;
-
-            margin: auto;
-
-            border-radius: 50%;
-
-            display: flex;
-
-            align-items: center;
-
-            justify-content: center;
-
-            background: #d4af37;
-
-            color: #171020;
-
-            font-size: 45px;
-
-            margin-bottom: 25px;
-        }
-
-
-        h1 {
-
-            font-size: 32px;
-
-            margin-bottom: 10px;
-        }
-
-
-        .gold {
-
-            color: #d4af37;
-        }
-
-
-        .reference {
-
-            margin: 25px auto;
-
-            padding: 18px;
-
-            border-radius: 15px;
-
-            background:
-                rgba(212,175,55,.10);
-
-            border:
-                1px dashed #d4af37;
-        }
-
-
-        .reference small {
-
-            display: block;
-
-            color: #aaa;
-
-            margin-bottom: 5px;
-        }
-
-
-        .reference strong {
-
-            font-size: 23px;
-
-            color: #d4af37;
-
-            letter-spacing: 2px;
-        }
-
-
-        .details {
-
-            color: #ccc;
-
-            line-height: 2;
-
-            margin-bottom: 25px;
-        }
-
-
-        .buttons {
-
-            display: flex;
-
-            gap: 12px;
-
-            justify-content: center;
-
-            flex-wrap: wrap;
-        }
-
-
-        .btn {
-
-            text-decoration: none;
-
-            padding: 12px 23px;
-
-            border-radius: 25px;
-
-            font-weight: 600;
-
-            transition: .3s;
-        }
-
-
-        .primary {
-
-            background: #d4af37;
-
-            color: #171020;
-        }
-
-
-        .secondary {
-
-            border:
-                1px solid rgba(255,255,255,.2);
-
-            color: white;
-        }
-
-
-        .btn:hover {
-
-            transform:
-                translateY(-2px);
-        }
-
-        </style>
-
-        </head>
-
-
-        <body>
-
-
-        <div class="success-card">
-
-
-            <div class="success-icon">
-
-                ✓
-
-            </div>
-
-
-            <h1>
-
-                Booking Confirmed! 🎉
-
-            </h1>
-
-
-            <p>
-
-                Your TicketFlix movie tickets
-                have been successfully booked.
-
-            </p>
-
-
-            <div class="reference">
-
-                <small>
-                    Booking Reference
-                </small>
-
-                <strong>
-
-                    <?= htmlspecialchars(
-                        $booking_reference
-                    ); ?>
-
-                </strong>
-
-            </div>
-
-
-            <div class="details">
-
-                🎬
-                <?= htmlspecialchars(
-                    $movie_name
-                ); ?>
-
-                <br>
-
-
-                📅
-                <?= date(
-                    "d M Y",
-                    strtotime(
-                        $showtime['show_date']
-                    )
-                ); ?>
-
-                &nbsp; | &nbsp;
-
-                🕐
-                <?= date(
-                    "h:i A",
-                    strtotime(
-                        $showtime['show_time']
-                    )
-                ); ?>
-
-                <br>
-
-
-                💺
-                <?= count(
-                    $selected_seats
-                ); ?>
-
-                Seat(s)
-
-
-                <br>
-
-
-                💰
-                ₹<?= number_format(
-                    $total_amount,
-                    2
-                ); ?>
-
-            </div>
-
-
-            <div class="buttons">
-
-
-                <a
-                    href="my_bookings.php"
-                    class="btn primary"
-                >
-
-                    My Bookings
-
-                </a>
-
-
-                <a
-                    href="showtimes.php"
-                    class="btn secondary"
-                >
-
-                    Book Another Movie
-
-                </a>
-
-
-            </div>
-
-
-        </div>
-
-
-        </body>
-
-        </html>
-
-        <?php
-
-        exit();
-
-
-    }
-
-    catch (Exception $e) {
-
-
-        $conn->rollback();
-
-
-        die(
-            "Booking failed: " .
-            htmlspecialchars(
-                $e->getMessage()
+            $error_message =
+                "Please select a payment method.";
+
+        } elseif (
+            empty($user_email) ||
+            !filter_var(
+                $user_email,
+                FILTER_VALIDATE_EMAIL
             )
-        );
+        ) {
+
+            $error_message =
+                "Registered user email not found.";
+
+        } else {
+
+
+            /*
+            |--------------------------------------------------------------------------
+            | LOCAL TEST PAYMENT SUCCESS
+            |--------------------------------------------------------------------------
+            |
+            | IMPORTANT:
+            | This is still TEST payment logic.
+            | Real payment gateway should be connected later.
+            |
+            */
+
+            $payment_success = true;
+
+
+            /*
+            |--------------------------------------------------------------------------
+            | PAYMENT ID
+            |--------------------------------------------------------------------------
+            */
+
+            $payment_id =
+                'TFX' .
+                date('YmdHis') .
+                strtoupper(
+                    substr(
+                        bin2hex(
+                            random_bytes(4)
+                        ),
+                        0,
+                        6
+                    )
+                );
+
+
+            /*
+            |--------------------------------------------------------------------------
+            | BOOKING REFERENCE
+            |--------------------------------------------------------------------------
+            */
+
+            $booking_reference =
+                'TF' .
+                date('ymd') .
+                strtoupper(
+                    substr(
+                        bin2hex(
+                            random_bytes(4)
+                        ),
+                        0,
+                        6
+                    )
+                );
+
+
+            /*
+            |--------------------------------------------------------------------------
+            | CHECK WHETHER BOOKING ALREADY EXISTS
+            |--------------------------------------------------------------------------
+            |
+            | Prevent duplicate booking on accidental refresh.
+            |
+            */
+
+            $existing_booking_id = 0;
+
+            if (
+                isset(
+                    $_SESSION['current_booking_id']
+                )
+            ) {
+
+                $existing_booking_id =
+                    (int)
+                    $_SESSION['current_booking_id'];
+
+            }
+
+
+            /*
+            |--------------------------------------------------------------------------
+            | CREATE BOOKING
+            |--------------------------------------------------------------------------
+            */
+
+            if ($existing_booking_id <= 0) {
+
+                $booking_stmt =
+                    $conn->prepare("
+                        INSERT INTO bookings
+                        (
+                            user_id,
+                            showtime_id,
+                            total_amount,
+                            booking_status,
+                            payment_status,
+                            booking_reference
+                        )
+                        VALUES
+                        (
+                            ?,
+                            ?,
+                            ?,
+                            'confirmed',
+                            'completed',
+                            ?
+                        )
+                    ");
+
+
+                if (!$booking_stmt) {
+
+                    $payment_success = false;
+
+                    $error_message =
+                        "Booking database error: " .
+                        $conn->error;
+
+                } else {
+
+                    $booking_stmt->bind_param(
+                        "iids",
+                        $user_id,
+                        $showtime_id,
+                        $total_amount,
+                        $booking_reference
+                    );
+
+
+                    if (
+                        !$booking_stmt->execute()
+                    ) {
+
+                        $payment_success = false;
+
+                        $error_message =
+                            "Booking could not be saved: " .
+                            $booking_stmt->error;
+
+                    } else {
+
+                        $booking_id =
+                            $conn->insert_id;
+
+                    }
+
+
+                    $booking_stmt->close();
+
+                }
+
+            } else {
+
+                $booking_id =
+                    $existing_booking_id;
+
+                /*
+                |--------------------------------------------------------------------------
+                | GET EXISTING BOOKING REFERENCE
+                |--------------------------------------------------------------------------
+                */
+
+                $reference_stmt =
+                    $conn->prepare("
+                        SELECT booking_reference
+                        FROM bookings
+                        WHERE id = ?
+                        LIMIT 1
+                    ");
+
+
+                if ($reference_stmt) {
+
+                    $reference_stmt->bind_param(
+                        "i",
+                        $booking_id
+                    );
+
+                    $reference_stmt->execute();
+
+                    $reference_result =
+                        $reference_stmt->get_result();
+
+                    $reference_data =
+                        $reference_result->fetch_assoc();
+
+                    if (
+                        $reference_data &&
+                        !empty(
+                            $reference_data[
+                                'booking_reference'
+                            ]
+                        )
+                    ) {
+
+                        $booking_reference =
+                            $reference_data[
+                                'booking_reference'
+                            ];
+
+                    }
+
+                    $reference_stmt->close();
+
+                }
+
+            }
+
+
+            /*
+            |--------------------------------------------------------------------------
+            | SAVE BOOKING SEATS
+            |--------------------------------------------------------------------------
+            */
+
+            if (
+                $payment_success &&
+                $booking_id > 0
+            ) {
+
+                /*
+                |--------------------------------------------------------------------------
+                | CHECK IF SEATS ARE ALREADY SAVED
+                |--------------------------------------------------------------------------
+                */
+
+                $seat_check_stmt =
+                    $conn->prepare("
+                        SELECT COUNT(*)
+                        AS total
+                        FROM booking_seats
+                        WHERE booking_id = ?
+                    ");
+
+
+                $existing_seat_count = 0;
+
+
+                if ($seat_check_stmt) {
+
+                    $seat_check_stmt->bind_param(
+                        "i",
+                        $booking_id
+                    );
+
+                    $seat_check_stmt->execute();
+
+                    $seat_check_result =
+                        $seat_check_stmt->get_result();
+
+                    $seat_check_data =
+                        $seat_check_result->fetch_assoc();
+
+                    if ($seat_check_data) {
+
+                        $existing_seat_count =
+                            (int)
+                            $seat_check_data['total'];
+
+                    }
+
+                    $seat_check_stmt->close();
+
+                }
+
+
+                /*
+                |--------------------------------------------------------------------------
+                | INSERT SEATS ONLY ONCE
+                |--------------------------------------------------------------------------
+                */
+
+                if (
+                    $existing_seat_count === 0
+                ) {
+
+                    $seat_stmt =
+                        $conn->prepare("
+                            INSERT INTO booking_seats
+                            (
+                                booking_id,
+                                seat_id
+                            )
+                            VALUES
+                            (
+                                ?,
+                                ?
+                            )
+                        ");
+
+
+                    if (!$seat_stmt) {
+
+                        $payment_success = false;
+
+                        $error_message =
+                            "Seat booking database error: " .
+                            $conn->error;
+
+                    } else {
+
+                        foreach (
+                            $seat_ids
+                            as $seat_id
+                        ) {
+
+                            $seat_stmt->bind_param(
+                                "ii",
+                                $booking_id,
+                                $seat_id
+                            );
+
+
+                            if (
+                                !$seat_stmt->execute()
+                            ) {
+
+                                $payment_success = false;
+
+                                $error_message =
+                                    "Seat could not be saved.";
+
+                                break;
+
+                            }
+
+                        }
+
+
+                        $seat_stmt->close();
+
+                    }
+
+                }
+
+            }
+
+
+            /*
+            |--------------------------------------------------------------------------
+            | SAVE SESSION
+            |--------------------------------------------------------------------------
+            */
+
+            if ($payment_success) {
+
+                $_SESSION['payment_id'] =
+                    $payment_id;
+
+                $_SESSION['payment_method'] =
+                    $payment_method;
+
+                $_SESSION['booking_email'] =
+                    $user_email;
+
+                $_SESSION['booking_reference'] =
+                    $booking_reference;
+
+                $_SESSION['current_booking_id'] =
+                    $booking_id;
+
+
+                /*
+                |--------------------------------------------------------------------------
+                | SEND EMAIL
+                |--------------------------------------------------------------------------
+                */
+
+                $email_sent =
+                    sendBookingConfirmationEmail(
+
+                        $user_email,
+
+                        $showtime['movie_name'],
+
+                        $showtime['show_date'],
+
+                        $showtime['show_time'],
+
+                        $showtime['theater_name'],
+
+                        $showtime['screen_name'],
+
+                        $selected_seats,
+
+                        $total_amount,
+
+                        $booking_reference
+
+                    );
+
+            }
+
+        }
 
     }
 
 }
 
-
-/* =========================================================
-   13. DISPLAY BOOKING CONFIRMATION PAGE
-========================================================= */
+?>
 
 ?>
 
@@ -1131,400 +871,1278 @@ if (
     content="width=device-width, initial-scale=1.0"
 >
 
-<title>Confirm Booking | TicketFlix</title>
+<title>
 
+<?= $payment_success
+    ? 'Payment Successful | TicketFlix'
+    : 'Checkout | TicketFlix'
+?>
 
-<link
-    href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&display=swap"
-    rel="stylesheet"
->
+</title>
 
 
 <style>
 
-/* ==================================================
-   GLOBAL
-================================================== */
+/* =========================================================
+   RESET
+========================================================= */
 
 * {
-
-    margin: 0;
-
-    padding: 0;
-
     box-sizing: border-box;
-
+    margin: 0;
+    padding: 0;
 }
 
 
 body {
 
+    font-family:
+        Arial,
+        Helvetica,
+        sans-serif;
+
     min-height: 100vh;
 
-    font-family: Poppins, sans-serif;
+    color: #24202a;
 
     background:
-
         radial-gradient(
-            circle at top right,
-            rgba(126,87,194,.25),
-            transparent 35%
-        ),
+            circle at top left,
+            #341252 0%,
+            #180b25 45%,
+            #09060e 100%
+        );
 
-        radial-gradient(
-            circle at bottom left,
-            rgba(255,193,7,.10),
-            transparent 35%
-        ),
-
-        #100b18;
-
-    color: white;
-
-    padding-bottom: 50px;
 }
 
 
-/* ==================================================
-   NAVBAR
-================================================== */
+/* =========================================================
+   HEADER
+========================================================= */
 
-.navbar {
+.header {
 
-    height: 75px;
+    height: 78px;
 
-    padding: 0 6%;
+    padding:
+        0 6%;
 
-    display: flex;
+    display:
+        flex;
 
-    align-items: center;
+    align-items:
+        center;
 
-    justify-content: space-between;
+    justify-content:
+        space-between;
 
     background:
-        rgba(18,12,28,.97);
+        rgba(10,7,15,.94);
 
     border-bottom:
-        1px solid rgba(212,175,55,.20);
+        1px solid
+        rgba(255,255,255,.08);
+
 }
 
 
 .logo {
 
-    font-size: 27px;
+    color:
+        white;
 
-    font-weight: 800;
+    font-size:
+        29px;
+
+    font-weight:
+        800;
+
 }
 
 
 .logo span {
 
-    color: #d4af37;
+    color:
+        #f4c430;
+
 }
 
 
-.back {
+.back-btn {
 
-    color: white;
+    text-decoration:
+        none;
 
-    text-decoration: none;
+    color:
+        white;
 
     border:
-        1px solid rgba(255,255,255,.2);
+        1px solid
+        rgba(255,255,255,.16);
 
-    padding: 9px 18px;
+    padding:
+        10px 19px;
 
-    border-radius: 25px;
+    border-radius:
+        25px;
+
+    transition:
+        .25s;
+
 }
 
 
-/* ==================================================
-   CONTAINER
-================================================== */
+.back-btn:hover {
+
+    background:
+        #f4c430;
+
+    color:
+        #21102d;
+
+}
+
+
+/* =========================================================
+   MAIN
+========================================================= */
 
 .container {
 
-    width: 92%;
+    width:
+        min(1120px, 92%);
 
-    max-width: 900px;
+    margin:
+        45px auto 80px;
 
-    margin: 40px auto;
 }
 
 
-/* ==================================================
-   HEADER
-================================================== */
+/* =========================================================
+   CHECKOUT HEADER
+========================================================= */
 
-.page-title {
+.checkout-header {
 
-    text-align: center;
+    margin-bottom:
+        28px;
 
-    margin-bottom: 30px;
 }
 
 
-.page-title h1 {
+.checkout-header h1 {
 
-    font-size: 32px;
+    color:
+        white;
 
-    margin-bottom: 8px;
+    font-size:
+        31px;
+
+    margin-bottom:
+        7px;
+
 }
 
 
-.gold {
+.checkout-header p {
 
-    color: #d4af37;
+    color:
+        #aaa2b0;
+
+    font-size:
+        14px;
+
 }
 
 
-.page-title p {
+/* =========================================================
+   GRID
+========================================================= */
 
-    color: #aaa;
+.checkout-grid {
+
+    display:
+        grid;
+
+    grid-template-columns:
+        .95fr 1.2fr;
+
+    gap:
+        24px;
+
+    align-items:
+        start;
+
 }
 
 
-/* ==================================================
-   CARD
-================================================== */
+/* =========================================================
+   SUMMARY
+========================================================= */
 
-.card {
+.summary-card {
 
     background:
-        rgba(255,255,255,.055);
+        linear-gradient(
+            145deg,
+            #351650,
+            #1c0e2c
+        );
+
+    color:
+        white;
 
     border:
-        1px solid rgba(212,175,55,.18);
+        1px solid
+        rgba(244,196,48,.28);
 
-    border-radius: 25px;
+    border-radius:
+        22px;
 
-    padding: 30px;
+    padding:
+        29px;
 
-    margin-bottom: 20px;
+    box-shadow:
+        0 25px 60px
+        rgba(0,0,0,.28);
 
-    backdrop-filter: blur(15px);
 }
 
 
-.card-title {
+.summary-heading {
 
-    font-size: 18px;
+    font-size:
+        21px;
 
-    font-weight: 700;
+    margin-bottom:
+        23px;
 
-    margin-bottom: 20px;
-
-    color: #d4af37;
 }
 
 
-/* ==================================================
-   MOVIE INFO
-================================================== */
+.movie-label {
 
-.movie-box {
+    color:
+        #aaa1b3;
 
-    display: flex;
+    font-size:
+        12px;
 
-    justify-content: space-between;
+    text-transform:
+        uppercase;
 
-    gap: 20px;
+    letter-spacing:
+        1px;
 
-    flex-wrap: wrap;
+    margin-bottom:
+        8px;
+
 }
 
 
 .movie-name {
 
-    font-size: 25px;
+    color:
+        #f4c430;
 
-    font-weight: 700;
+    font-size:
+        26px;
 
-    margin-bottom: 12px;
+    line-height:
+        1.2;
+
+    font-weight:
+        800;
+
+    margin-bottom:
+        22px;
+
 }
 
 
-.info {
+.info-row {
 
-    display: flex;
+    display:
+        flex;
 
-    flex-wrap: wrap;
+    justify-content:
+        space-between;
 
-    gap: 10px;
-}
+    gap:
+        15px;
 
-
-.info span {
-
-    padding: 7px 13px;
-
-    border-radius: 20px;
-
-    background:
-        rgba(255,255,255,.07);
-
-    color: #ccc;
-
-    font-size: 13px;
-}
-
-
-/* ==================================================
-   SEATS
-================================================== */
-
-.seats-list {
-
-    display: flex;
-
-    flex-wrap: wrap;
-
-    gap: 10px;
-}
-
-
-.seat-tag {
-
-    padding: 8px 14px;
-
-    border-radius: 10px;
-
-    background:
-        rgba(212,175,55,.12);
-
-    border:
-        1px solid rgba(212,175,55,.35);
-
-    color: #f1d46a;
-
-    font-size: 13px;
-}
-
-
-/* ==================================================
-   PRICE
-================================================== */
-
-.price-row {
-
-    display: flex;
-
-    justify-content: space-between;
-
-    padding: 12px 0;
+    padding:
+        13px 0;
 
     border-bottom:
-        1px solid rgba(255,255,255,.08);
+        1px solid
+        rgba(255,255,255,.08);
 
-    color: #ccc;
+    color:
+        #bdb5c6;
+
+    font-size:
+        13px;
+
 }
 
 
-.price-row:last-child {
+.info-row strong {
 
-    border-bottom: none;
+    color:
+        white;
+
+    text-align:
+        right;
+
 }
 
 
-.price-row.total {
+.seat-heading {
 
-    margin-top: 10px;
+    color:
+        #aaa1b3;
 
-    padding-top: 18px;
+    font-size:
+        12px;
 
-    font-size: 21px;
+    margin:
+        23px 0 12px;
 
-    font-weight: 700;
+    letter-spacing:
+        .8px;
 
-    color: white;
 }
 
 
-.price-row.total span:last-child {
+.seats {
 
-    color: #d4af37;
+    display:
+        flex;
+
+    flex-wrap:
+        wrap;
+
+    gap:
+        8px;
+
 }
 
 
-/* ==================================================
-   CONFIRM BUTTON
-================================================== */
+.seat {
 
-.confirm-btn {
+    background:
+        #f4c430;
 
-    width: 100%;
+    color:
+        #21102d;
 
-    border: none;
+    font-weight:
+        800;
 
-    padding: 16px;
+    font-size:
+        13px;
 
-    border-radius: 30px;
+    padding:
+        8px 12px;
+
+    border-radius:
+        8px;
+
+}
+
+
+.amount-section {
+
+    margin-top:
+        24px;
+
+    padding-top:
+        20px;
+
+    border-top:
+        1px solid
+        rgba(255,255,255,.10);
+
+}
+
+
+.amount-row {
+
+    display:
+        flex;
+
+    justify-content:
+        space-between;
+
+    color:
+        #bdb5c6;
+
+    margin-bottom:
+        12px;
+
+    font-size:
+        14px;
+
+}
+
+
+.total-row {
+
+    display:
+        flex;
+
+    justify-content:
+        space-between;
+
+    align-items:
+        center;
+
+    margin-top:
+        16px;
+
+}
+
+
+.total-label {
+
+    color:
+        white;
+
+    font-size:
+        17px;
+
+    font-weight:
+        700;
+
+}
+
+
+.total-price {
+
+    color:
+        #f4c430;
+
+    font-size:
+        27px;
+
+    font-weight:
+        800;
+
+}
+
+
+/* =========================================================
+   PAYMENT CARD
+========================================================= */
+
+.payment-card {
+
+    background:
+        #ffffff;
+
+    border-radius:
+        22px;
+
+    padding:
+        32px;
+
+    box-shadow:
+        0 25px 70px
+        rgba(0,0,0,.38);
+
+}
+
+
+.payment-title {
+
+    font-size:
+        27px;
+
+    margin-bottom:
+        7px;
+
+    color:
+        #211c26;
+
+}
+
+
+.payment-subtitle {
+
+    color:
+        #85808a;
+
+    font-size:
+        14px;
+
+    margin-bottom:
+        25px;
+
+}
+
+
+/* =========================================================
+   BOOKING EMAIL
+========================================================= */
+
+.email-box {
+
+    border:
+        1px solid
+        #e3dee7;
+
+    background:
+        #faf8fc;
+
+    border-radius:
+        11px;
+
+    padding:
+        13px 15px;
+
+    margin-bottom:
+        24px;
+
+}
+
+
+.email-label {
+
+    display:
+        block;
+
+    color:
+        #8d8791;
+
+    font-size:
+        10px;
+
+    font-weight:
+        800;
+
+    letter-spacing:
+        .7px;
+
+    margin-bottom:
+        5px;
+
+}
+
+
+.email-value {
+
+    color:
+        #29232f;
+
+    font-size:
+        14px;
+
+    font-weight:
+        700;
+
+    word-break:
+        break-word;
+
+}
+
+
+/* =========================================================
+   ERROR
+========================================================= */
+
+.error-box {
+
+    background:
+        #fff2f2;
+
+    border:
+        1px solid
+        #f0b7b7;
+
+    color:
+        #a42121;
+
+    padding:
+        12px 14px;
+
+    border-radius:
+        9px;
+
+    margin-bottom:
+        18px;
+
+    font-size:
+        13px;
+
+    font-weight:
+        600;
+
+}
+
+
+/* =========================================================
+   PAYMENT METHOD
+========================================================= */
+
+.section-title {
+
+    font-size:
+        16px;
+
+    font-weight:
+        800;
+
+    color:
+        #2a2530;
+
+    margin-bottom:
+        12px;
+
+}
+
+
+.methods {
+
+    border:
+        1px solid
+        #dfd9e2;
+
+    border-radius:
+        12px;
+
+    overflow:
+        hidden;
+
+    margin-bottom:
+        22px;
+
+}
+
+
+.method {
+
+    position:
+        relative;
+
+    display:
+        flex;
+
+    align-items:
+        center;
+
+    gap:
+        13px;
+
+    min-height:
+        66px;
+
+    padding:
+        0 15px;
+
+    cursor:
+        pointer;
+
+    border-bottom:
+        1px solid
+        #ebe7ed;
+
+    transition:
+        .2s;
+
+}
+
+
+.method:last-child {
+
+    border-bottom:
+        none;
+
+}
+
+
+.method:hover {
+
+    background:
+        #faf8ff;
+
+}
+
+
+.method input {
+
+    width:
+        18px;
+
+    height:
+        18px;
+
+    accent-color:
+        #7137c8;
+
+}
+
+
+.method-icon {
+
+    width:
+        37px;
+
+    height:
+        37px;
+
+    border-radius:
+        9px;
+
+    display:
+        flex;
+
+    align-items:
+        center;
+
+    justify-content:
+        center;
+
+    background:
+        #f0e8ff;
+
+    font-size:
+        18px;
+
+}
+
+
+.method-content {
+
+    flex:
+        1;
+
+}
+
+
+.method-name {
+
+    display:
+        block;
+
+    color:
+        #2c2730;
+
+    font-size:
+        14px;
+
+    font-weight:
+        800;
+
+}
+
+
+.method-desc {
+
+    display:
+        block;
+
+    color:
+        #97919c;
+
+    font-size:
+        11px;
+
+    margin-top:
+        3px;
+
+}
+
+
+/* =========================================================
+   PAYMENT DETAILS
+========================================================= */
+
+.details {
+
+    display:
+        none;
+
+}
+
+
+.details.active {
+
+    display:
+        block;
+
+}
+
+
+.input-group {
+
+    margin-bottom:
+        16px;
+
+}
+
+
+.input-group label {
+
+    display:
+        block;
+
+    color:
+        #4c4650;
+
+    font-size:
+        12px;
+
+    font-weight:
+        700;
+
+    margin-bottom:
+        7px;
+
+}
+
+
+.input-group input {
+
+    width:
+        100%;
+
+    height:
+        46px;
+
+    padding:
+        0 13px;
+
+    border:
+        1px solid
+        #ddd7e0;
+
+    border-radius:
+        9px;
+
+    outline:
+        none;
+
+    font-size:
+        13px;
+
+    color:
+        #28222d;
+
+    background:
+        #fff;
+
+}
+
+
+.input-group input:focus {
+
+    border-color:
+        #8052c9;
+
+    box-shadow:
+        0 0 0 3px
+        rgba(128,82,201,.10);
+
+}
+
+
+.input-row {
+
+    display:
+        grid;
+
+    grid-template-columns:
+        1fr 1fr;
+
+    gap:
+        12px;
+
+}
+
+
+/* =========================================================
+   PAYABLE
+========================================================= */
+
+.payable {
+
+    display:
+        flex;
+
+    justify-content:
+        space-between;
+
+    align-items:
+        center;
+
+    padding:
+        18px 0;
+
+    margin-top:
+        7px;
+
+    border-top:
+        1px solid
+        #ebe7ed;
+
+}
+
+
+.payable-label {
+
+    color:
+        #77717b;
+
+    font-size:
+        14px;
+
+}
+
+
+.payable-price {
+
+    color:
+        #241c29;
+
+    font-size:
+        22px;
+
+    font-weight:
+        800;
+
+}
+
+
+/* =========================================================
+   PAY BUTTON
+========================================================= */
+
+.pay-btn {
+
+    width:
+        100%;
+
+    height:
+        54px;
+
+    border:
+        none;
+
+    border-radius:
+        10px;
+
+    cursor:
+        pointer;
 
     background:
         linear-gradient(
             135deg,
-            #d4af37,
-            #f1d46a
+            #f4c430,
+            #e8b415
         );
 
-    color: #171020;
+    color:
+        #24102e;
 
-    font-size: 16px;
+    font-size:
+        16px;
 
-    font-weight: 800;
+    font-weight:
+        800;
 
-    cursor: pointer;
+    transition:
+        .25s;
 
-    transition: .3s;
-
-    box-shadow:
-        0 10px 30px
-        rgba(212,175,55,.25);
 }
 
 
-.confirm-btn:hover {
+.pay-btn:hover {
 
     transform:
         translateY(-2px);
 
     box-shadow:
-        0 15px 35px
-        rgba(212,175,55,.40);
+        0 12px 25px
+        rgba(244,196,48,.28);
+
 }
 
 
-.note {
+.secure-text {
 
-    text-align: center;
+    text-align:
+        center;
 
-    color: #888;
+    color:
+        #9b959f;
 
-    font-size: 12px;
+    font-size:
+        11px;
 
-    margin-top: 15px;
+    margin-top:
+        13px;
+
 }
 
 
-@media(max-width:600px) {
+/* =========================================================
+   SUCCESS
+========================================================= */
+
+.success-card {
+
+    max-width:
+        700px;
+
+    margin:
+        55px auto;
+
+    padding:
+        45px 35px;
+
+    text-align:
+        center;
+
+    background:
+        linear-gradient(
+            145deg,
+            #351650,
+            #1c0e2c
+        );
+
+    color:
+        white;
+
+    border:
+        1px solid
+        rgba(244,196,48,.28);
+
+    border-radius:
+        24px;
+
+    box-shadow:
+        0 25px 70px
+        rgba(0,0,0,.35);
+
+}
+
+
+.success-icon {
+
+    width:
+        82px;
+
+    height:
+        82px;
+
+    margin:
+        0 auto 22px;
+
+    border-radius:
+        50%;
+
+    display:
+        flex;
+
+    align-items:
+        center;
+
+    justify-content:
+        center;
+
+    background:
+        #f4c430;
+
+    color:
+        #24102e;
+
+    font-size:
+        42px;
+
+    font-weight:
+        800;
+
+}
+
+
+.success-card h1 {
+
+    font-size:
+        32px;
+
+    margin-bottom:
+        10px;
+
+}
+
+
+.success-card h1 span {
+
+    color:
+        #f4c430;
+
+}
+
+
+.success-card p {
+
+    color:
+        #c7becf;
+
+    font-size:
+        14px;
+
+    line-height:
+        1.6;
+
+    margin-bottom:
+        25px;
+
+}
+
+
+.payment-id {
+
+    padding:
+        17px;
+
+    border-radius:
+        11px;
+
+    background:
+        rgba(255,255,255,.06);
+
+    border:
+        1px solid
+        rgba(255,255,255,.09);
+
+    margin-bottom:
+        24px;
+
+}
+
+
+.payment-id small {
+
+    display:
+        block;
+
+    color:
+        #9890a3;
+
+    margin-bottom:
+        6px;
+
+}
+
+
+.payment-id strong {
+
+    color:
+        #f4c430;
+
+    letter-spacing:
+        1.5px;
+
+}
+
+
+.done-btn {
+
+    display:
+        inline-block;
+
+    padding:
+        13px 26px;
+
+    border-radius:
+        28px;
+
+    background:
+        #f4c430;
+
+    color:
+        #24102e;
+
+    text-decoration:
+        none;
+
+    font-weight:
+        800;
+
+}
+
+
+/* =========================================================
+   RESPONSIVE
+========================================================= */
+
+@media(max-width:850px) {
+
+    .checkout-grid {
+
+        grid-template-columns:
+            1fr;
+
+    }
+
+}
+
+
+@media(max-width:550px) {
+
+    .header {
+
+        padding:
+            0 4%;
+
+    }
+
+    .logo {
+
+        font-size:
+            24px;
+
+    }
 
     .container {
 
-        width: 94%;
+        width:
+            94%;
 
-        margin-top: 25px;
+        margin-top:
+            28px;
+
     }
 
+    .payment-card,
+    .summary-card {
 
-    .card {
+        padding:
+            22px;
 
-        padding: 22px;
     }
 
+    .checkout-header h1 {
 
-    .page-title h1 {
+        font-size:
+            27px;
 
-        font-size: 26px;
+    }
+
+    .payment-title {
+
+        font-size:
+            24px;
+
+    }
+
+    .input-row {
+
+        grid-template-columns:
+            1fr;
+
     }
 
 }
@@ -1537,260 +2155,360 @@ body {
 <body>
 
 
-<nav class="navbar">
+<!-- =========================================================
+     HEADER
+========================================================= -->
 
+<header class="header">
 
     <div class="logo">
 
-        Ticket<span>Flix</span> 🎬
+        Ticket<span>Flix</span>
 
     </div>
+
+
+    <?php if (!$payment_success): ?>
+
+        <a
+            href="javascript:history.back()"
+            class="back-btn"
+        >
+
+            ← Back
+
+        </a>
+
+    <?php endif; ?>
+
+</header>
+
+
+
+<main class="container">
+
+
+<?php if ($payment_success): ?>
+
+
+<!-- =========================================================
+     SUCCESS PAGE
+========================================================= -->
+
+<div class="success-card">
+
+    <div class="success-icon">
+
+        ✓
+
+    </div>
+
+
+    <h1>
+
+        Payment <span>Successful!</span>
+
+    </h1>
+
+
+    <p>
+
+        Your TicketFlix booking has been confirmed successfully.
+        Your seats are reserved for the selected show.
+
+    </p>
+
+
+    <div class="payment-id">
+
+    <small>
+        BOOKING REFERENCE
+    </small>
+
+    <strong>
+        <?= htmlspecialchars($booking_reference); ?>
+    </strong>
+
+</div>
+
+
+<div class="payment-id">
+
+    <small>
+        PAYMENT ID
+    </small>
+
+    <strong>
+        <?= htmlspecialchars($payment_id); ?>
+    </strong>
+
+</div>
 
 
     <a
-        href="seats.php?showtime_id=<?= $showtime_id; ?>"
-        class="back"
+        href="my_bookings.php"
+        class="done-btn"
     >
 
-        ← Back
+        🎟 View My Bookings
 
     </a>
 
-
-</nav>
-
+</div>
 
 
-<div class="container">
+<?php else: ?>
 
 
-    <div class="page-title">
+<!-- =========================================================
+     CHECKOUT HEADER
+========================================================= -->
 
-        <h1>
+<div class="checkout-header">
 
-            Confirm Your
-            <span class="gold">
-                Booking
-            </span>
+    <h1>
 
-        </h1>
+        Complete Your Payment
 
-        <p>
+    </h1>
 
-            Review your tickets before confirming.
+    <p>
 
-        </p>
+        Review your booking details and choose a payment method.
 
-    </div>
+    </p>
 
-
-
-    <!-- MOVIE -->
-
-    <div class="card">
+</div>
 
 
-        <div class="card-title">
 
-            🎬 Movie Details
-
-        </div>
+<div class="checkout-grid">
 
 
-        <div class="movie-box">
+<!-- =========================================================
+     LEFT - BOOKING SUMMARY
+========================================================= -->
+
+<section class="summary-card">
 
 
-            <div>
+    <h2 class="summary-heading">
+
+        Booking Summary
+
+    </h2>
 
 
-                <div class="movie-name">
+    <div class="movie-label">
 
-                    <?= htmlspecialchars(
-                        $movie_name
-                    ); ?>
-
-                </div>
-
-
-                <div class="info">
-
-
-                    <span>
-
-                        📅
-                        <?= date(
-                            "d M Y",
-                            strtotime(
-                                $showtime['show_date']
-                            )
-                        ); ?>
-
-                    </span>
-
-
-                    <span>
-
-                        🕐
-                        <?= date(
-                            "h:i A",
-                            strtotime(
-                                $showtime['show_time']
-                            )
-                        ); ?>
-
-                    </span>
-
-
-                    <span>
-
-                        🎭
-                        <?= htmlspecialchars(
-                            $screen['screen_name']
-                        ); ?>
-
-                    </span>
-
-
-                    <?php if ($theater): ?>
-
-                        <span>
-
-                            📍
-                            <?= htmlspecialchars(
-                                $theater['name']
-                            ); ?>
-
-                        </span>
-
-                    <?php endif; ?>
-
-
-                </div>
-
-
-            </div>
-
-
-        </div>
-
+        Movie
 
     </div>
 
 
+    <div class="movie-name">
 
-    <!-- SEATS -->
-
-    <div class="card">
-
-
-        <div class="card-title">
-
-            💺 Selected Seats
-
-        </div>
-
-
-        <div class="seats-list">
-
-
-            <?php foreach (
-                $selected_seats
-                as $seat
-            ): ?>
-
-
-                <div class="seat-tag">
-
-                    <?= htmlspecialchars(
-                        $seat['row_number'] .
-                        $seat['seat_number']
-                    ); ?>
-
-                    ·
-
-                    ₹<?= number_format(
-                        $seat['calculated_price'],
-                        2
-                    ); ?>
-
-                </div>
-
-
-            <?php endforeach; ?>
-
-
-        </div>
-
+        <?= htmlspecialchars(
+            $showtime['movie_name']
+        ); ?>
 
     </div>
 
 
+    <div class="info-row">
 
-    <!-- PRICE -->
+        <span>
 
-    <div class="card">
+            Date
+
+        </span>
+
+        <strong>
+
+            <?= date(
+                "D, d M Y",
+                strtotime(
+                    $showtime['show_date']
+                )
+            ); ?>
+
+        </strong>
+
+    </div>
 
 
-        <div class="card-title">
+    <div class="info-row">
 
-            💰 Price Summary
+        <span>
 
-        </div>
+            Time
 
+        </span>
+
+        <strong>
+
+            <?= date(
+                "h:i A",
+                strtotime(
+                    $showtime['show_time']
+                )
+            ); ?>
+
+        </strong>
+
+    </div>
+
+
+    <div class="info-row">
+
+        <span>
+
+            Theater
+
+        </span>
+
+        <strong>
+
+            <?= htmlspecialchars(
+                $showtime['theater_name']
+            ); ?>
+
+        </strong>
+
+    </div>
+
+
+    <div class="info-row">
+
+        <span>
+
+            Screen
+
+        </span>
+
+        <strong>
+
+            <?= htmlspecialchars(
+                $showtime['screen_name']
+            ); ?>
+
+        </strong>
+
+    </div>
+
+
+    <?php if (!empty($showtime['city'])): ?>
+
+    <div class="info-row">
+
+        <span>
+
+            Location
+
+        </span>
+
+        <strong>
+
+            <?= htmlspecialchars(
+                $showtime['city']
+            ); ?>
+
+            <?php if (!empty($showtime['state'])): ?>
+
+                , <?= htmlspecialchars(
+                    $showtime['state']
+                ); ?>
+
+            <?php endif; ?>
+
+        </strong>
+
+    </div>
+
+    <?php endif; ?>
+
+
+    <div class="seat-heading">
+
+        SELECTED SEATS
+
+    </div>
+
+
+    <div class="seats">
 
         <?php foreach (
             $selected_seats
             as $seat
         ): ?>
 
+            <div class="seat">
 
-            <div class="price-row">
-
-
-                <span>
-
-                    Seat
-                    <?= htmlspecialchars(
-                        $seat['row_number'] .
-                        $seat['seat_number']
-                    ); ?>
-
-                    (<?= htmlspecialchars(
-                        ucfirst(
-                            $seat['seat_type']
-                        )
-                    ); ?>)
-
-                </span>
-
-
-                <span>
-
-                    ₹<?= number_format(
-                        $seat['calculated_price'],
-                        2
-                    ); ?>
-
-                </span>
-
+                <?= htmlspecialchars(
+                    $seat['seat_row']
+                ); ?><?= (int)$seat['seat_number']; ?>
 
             </div>
 
-
         <?php endforeach; ?>
 
+    </div>
 
-        <div class="price-row total">
 
+    <div class="amount-section">
+
+
+        <div class="amount-row">
 
             <span>
 
-                Total Amount
+                Tickets
 
             </span>
 
+            <strong>
+
+                <?= $seat_count; ?>
+                ×
+                ₹<?= number_format(
+                    $ticket_price,
+                    2
+                ); ?>
+
+            </strong>
+
+        </div>
+
+
+        <div class="amount-row">
 
             <span>
+
+                Convenience Fee
+
+            </span>
+
+            <strong>
+
+                ₹<?= number_format(
+                    $booking_fee,
+                    2
+                ); ?>
+
+            </strong>
+
+        </div>
+
+
+        <div class="total-row">
+
+            <span class="total-label">
+
+                Total
+
+            </span>
+
+            <span class="total-price">
 
                 ₹<?= number_format(
                     $total_amount,
@@ -1799,82 +2517,617 @@ body {
 
             </span>
 
-
         </div>
 
 
     </div>
 
+</section>
 
 
-    <!-- CONFIRM -->
 
-    <div class="card">
+<!-- =========================================================
+     RIGHT - PAYMENT
+========================================================= -->
+
+<section class="payment-card">
 
 
-        <form
-            method="POST"
-            action="booking.php"
+    <h2 class="payment-title">
+
+        Payment Details
+
+    </h2>
+
+
+    <p class="payment-subtitle">
+
+        Select your preferred payment method
+
+    </p>
+
+
+    <!-- EMAIL FROM SESSION -->
+
+    <div class="email-box">
+
+        <span class="email-label">
+
+            BOOKING EMAIL
+
+        </span>
+
+
+        <span class="email-value">
+
+            <?= $user_email !== ''
+                ? htmlspecialchars($user_email)
+                : 'Email not available'
+            ?>
+
+        </span>
+
+    </div>
+
+
+    <?php if ($error_message !== ''): ?>
+
+        <div class="error-box">
+
+            <?= htmlspecialchars(
+                $error_message
+            ); ?>
+
+        </div>
+
+    <?php endif; ?>
+
+
+    <div class="section-title">
+
+        Payment Method
+
+    </div>
+
+
+    <form
+        method="POST"
+        id="paymentForm"
+    >
+
+
+        <!-- SHOWTIME -->
+
+        <input
+            type="hidden"
+            name="showtime_id"
+            value="<?= $showtime_id; ?>"
         >
 
 
+        <!-- SEATS -->
+
+        <?php foreach (
+            $seat_ids
+            as $seat_id
+        ): ?>
+
             <input
                 type="hidden"
-                name="showtime_id"
-                value="<?= $showtime_id; ?>"
+                name="seat_ids[]"
+                value="<?= (int)$seat_id; ?>"
             >
 
+        <?php endforeach; ?>
 
-            <?php foreach (
-                $seat_ids
-                as $seat_id
-            ): ?>
 
+        <!-- PAYMENT METHODS -->
+
+        <div class="methods">
+
+
+            <!-- CARD -->
+
+            <label class="method">
 
                 <input
-                    type="hidden"
-                    name="seat_ids[]"
-                    value="<?= (int) $seat_id; ?>"
+                    type="radio"
+                    name="payment_method"
+                    value="card"
+                    required
+                    onchange="selectMethod('card')"
                 >
 
 
-            <?php endforeach; ?>
+                <div class="method-icon">
+
+                    💳
+
+                </div>
 
 
-            <input
-                type="hidden"
-                name="confirm_booking"
-                value="1"
-            >
+                <div class="method-content">
+
+                    <span class="method-name">
+
+                        Credit / Debit Card
+
+                    </span>
+
+                    <span class="method-desc">
+
+                        Visa • Mastercard • RuPay
+
+                    </span>
+
+                </div>
+
+            </label>
 
 
-            <button
-                type="submit"
-                class="confirm-btn"
-            >
 
-                🎟️ Confirm Booking →
-                
-            </button>
+            <!-- UPI -->
+
+            <label class="method">
+
+                <input
+                    type="radio"
+                    name="payment_method"
+                    value="upi"
+                    onchange="selectMethod('upi')"
+                >
 
 
-            <div class="note">
+                <div class="method-icon">
 
-                By confirming, your selected seats
-                will be reserved for this show.
+                    📱
+
+                </div>
+
+
+                <div class="method-content">
+
+                    <span class="method-name">
+
+                        UPI
+
+                    </span>
+
+                    <span class="method-desc">
+
+                        Google Pay • PhonePe • Paytm
+
+                    </span>
+
+                </div>
+
+            </label>
+
+
+
+            <!-- NET BANKING -->
+
+            <label class="method">
+
+                <input
+                    type="radio"
+                    name="payment_method"
+                    value="netbanking"
+                    onchange="selectMethod('netbanking')"
+                >
+
+
+                <div class="method-icon">
+
+                    🏦
+
+                </div>
+
+
+                <div class="method-content">
+
+                    <span class="method-name">
+
+                        Net Banking
+
+                    </span>
+
+                    <span class="method-desc">
+
+                        All major banks supported
+
+                    </span>
+
+                </div>
+
+            </label>
+
+
+        </div>
+
+
+
+        <!-- CARD DETAILS -->
+
+        <div
+            class="details"
+            id="cardDetails"
+        >
+
+            <div class="input-group">
+
+                <label>
+
+                    Cardholder Name
+
+                </label>
+
+                <input
+                    type="text"
+                    placeholder="Enter cardholder name"
+                    autocomplete="off"
+                >
 
             </div>
 
 
-        </form>
+            <div class="input-group">
+
+                <label>
+
+                    Card Number
+
+                </label>
+
+                <input
+                    type="text"
+                    placeholder="XXXX XXXX XXXX XXXX"
+                    maxlength="19"
+                    inputmode="numeric"
+                    autocomplete="off"
+                >
+
+            </div>
 
 
-    </div>
+            <div class="input-row">
+
+                <div class="input-group">
+
+                    <label>
+
+                        Expiry Date
+
+                    </label>
+
+                    <input
+                        type="text"
+                        placeholder="MM / YY"
+                        maxlength="7"
+                        autocomplete="off"
+                    >
+
+                </div>
+
+
+                <div class="input-group">
+
+                    <label>
+
+                        CVV
+
+                    </label>
+
+                    <input
+                        type="password"
+                        placeholder="•••"
+                        maxlength="3"
+                        inputmode="numeric"
+                        autocomplete="off"
+                    >
+
+                </div>
+
+            </div>
+
+        </div>
+
+
+
+        <!-- UPI DETAILS -->
+
+        <div
+            class="details"
+            id="upiDetails"
+        >
+
+            <div class="input-group">
+
+                <label>
+
+                    UPI ID
+
+                </label>
+
+                <input
+                    type="text"
+                    placeholder="example@upi"
+                    autocomplete="off"
+                >
+
+            </div>
+
+        </div>
+
+
+
+        <!-- NET BANKING DETAILS -->
+
+        <div
+            class="details"
+            id="bankDetails"
+        >
+
+            <div class="input-group">
+
+                <label>
+
+                    Select Bank
+
+                </label>
+
+                <select
+                    style="
+                        width:100%;
+                        height:46px;
+                        border:1px solid #ddd7e0;
+                        border-radius:9px;
+                        padding:0 13px;
+                        background:#fff;
+                        color:#28222d;
+                        font-size:13px;
+                    "
+                >
+
+                    <option value="">
+
+                        Select your bank
+
+                    </option>
+
+                    <option>
+
+                        State Bank of India
+
+                    </option>
+
+                    <option>
+
+                        HDFC Bank
+
+                    </option>
+
+                    <option>
+
+                        ICICI Bank
+
+                    </option>
+
+                    <option>
+
+                        Axis Bank
+
+                    </option>
+
+                    <option>
+
+                        Kotak Mahindra Bank
+
+                    </option>
+
+                </select>
+
+            </div>
+
+        </div>
+
+
+
+        <!-- PAYABLE -->
+
+        <div class="payable">
+
+            <span class="payable-label">
+
+                Payable Amount
+
+            </span>
+
+            <span class="payable-price">
+
+                ₹<?= number_format(
+                    $total_amount,
+                    2
+                ); ?>
+
+            </span>
+
+        </div>
+
+
+        <input
+            type="hidden"
+            name="pay_now"
+            value="1"
+        >
+
+
+        <!-- PAY -->
+
+        <button
+            type="submit"
+            class="pay-btn"
+        >
+
+            Pay ₹<?= number_format(
+                $total_amount,
+                2
+            ); ?>
+
+        </button>
+
+
+        <div class="secure-text">
+
+            🔒 Secure checkout
+
+        </div>
+
+
+    </form>
+
+
+</section>
 
 
 </div>
 
 
+<?php endif; ?>
+
+
+</main>
+
+
+
+<script>
+
+/*
+|--------------------------------------------------------------------------
+| PAYMENT METHOD SWITCH
+|--------------------------------------------------------------------------
+*/
+
+function selectMethod(method) {
+
+    const card =
+        document.getElementById('cardDetails');
+
+    const upi =
+        document.getElementById('upiDetails');
+
+    const bank =
+        document.getElementById('bankDetails');
+
+
+    card.classList.remove('active');
+
+    upi.classList.remove('active');
+
+    bank.classList.remove('active');
+
+
+    if (method === 'card') {
+
+        card.classList.add('active');
+
+    }
+
+
+    if (method === 'upi') {
+
+        upi.classList.add('active');
+
+    }
+
+
+    if (method === 'netbanking') {
+
+        bank.classList.add('active');
+
+    }
+
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| CARD NUMBER FORMAT
+|--------------------------------------------------------------------------
+*/
+
+document.addEventListener(
+    'input',
+    function(e) {
+
+        if (
+            e.target.placeholder ===
+            'XXXX XXXX XXXX XXXX'
+        ) {
+
+            let value =
+                e.target.value
+                .replace(/\D/g, '')
+                .substring(0, 16);
+
+            value =
+                value.match(/.{1,4}/g);
+
+            e.target.value =
+                value
+                    ? value.join(' ')
+                    : '';
+
+        }
+
+    }
+);
+
+
+/*
+|--------------------------------------------------------------------------
+| EXPIRY FORMAT
+|--------------------------------------------------------------------------
+*/
+
+document.addEventListener(
+    'input',
+    function(e) {
+
+        if (
+            e.target.placeholder ===
+            'MM / YY'
+        ) {
+
+            let value =
+                e.target.value
+                .replace(/\D/g, '')
+                .substring(0, 4);
+
+            if (value.length > 2) {
+
+                value =
+                    value.substring(0, 2)
+                    + ' / '
+                    + value.substring(2);
+
+            }
+
+            e.target.value = value;
+
+        }
+
+    }
+);
+
+</script>
+
+
 </body>
 
 </html>
+
+
+
+
+

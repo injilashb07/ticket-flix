@@ -26,8 +26,8 @@
         <div>
             <h3>Contact</h3>
 
-            <p><i class="fa-solid fa-envelope"></i> support@ticketflix.com</p>
-            <p><i class="fa-solid fa-phone"></i> +91 98765 43210</p>
+            <p><i class="fa-solid fa-envelope"></i> ticketflix40@gamil.com</p>
+            <p><i class="fa-solid fa-phone"></i> +91 9225535844</p>
         </div>
 
     </div>
