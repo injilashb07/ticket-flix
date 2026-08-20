@@ -1,258 +1,552 @@
 <?php
 
 session_start();
-require_once "config.php";
 
-/* =========================================================
-   LOGIN CHECK
-========================================================= */
+require_once 'config.php';
+
+
+/*
+|--------------------------------------------------------------------------
+| CHECK LOGIN
+|--------------------------------------------------------------------------
+*/
 
 if (!isset($_SESSION['user_id'])) {
+
     header("Location: login.php");
     exit();
+
 }
 
 
-/* =========================================================
-   GET SHOWTIME
-========================================================= */
+/*
+|--------------------------------------------------------------------------
+| GET SHOWTIME ID
+|--------------------------------------------------------------------------
+*/
 
 $showtime_id = isset($_GET['showtime_id'])
-    ? (int) $_GET['showtime_id']
-    : 0;
+    ? (int)$_GET['showtime_id']
+    : (isset($_GET['id']) ? (int)$_GET['id'] : 0);
+
 
 if ($showtime_id <= 0) {
-    die("Invalid showtime.");
+
+    die("Invalid showtime ID.");
+
 }
 
 
-/* =========================================================
-   GET SHOWTIME DETAILS
-========================================================= */
+/*
+|--------------------------------------------------------------------------
+| GET SHOWTIME
+|--------------------------------------------------------------------------
+*/
 
-$sql = "
+$stmt = $conn->prepare("
     SELECT
-        st.id,
-        st.show_date,
-        st.show_time,
-        st.price,
-
-        m.name AS movie_name,
-        m.poster_image,
-
-        s.id AS screen_id,
-        s.screen_name,
-
-        t.name AS theater_name
-
-    FROM showtimes st
-
-    INNER JOIN movies m
-        ON st.movie_id = m.id
-
-    INNER JOIN screens s
-        ON st.screen_id = s.id
-
-    INNER JOIN theaters t
-        ON s.theater_id = t.id
-
-    WHERE st.id = ?
-
+        id,
+        movie_id,
+        screen_id,
+        show_date,
+        show_time,
+        price
+    FROM showtimes
+    WHERE id = ?
     LIMIT 1
-";
+");
 
-$stmt = $conn->prepare($sql);
 
 if (!$stmt) {
-    die("Showtime query error: " . $conn->error);
+
+    die(
+        "Showtime query error: " .
+        htmlspecialchars($conn->error)
+    );
+
 }
 
-$stmt->bind_param("i", $showtime_id);
+
+$stmt->bind_param(
+    "i",
+    $showtime_id
+);
+
 $stmt->execute();
 
 $result = $stmt->get_result();
+
 $showtime = $result->fetch_assoc();
 
 $stmt->close();
 
+
 if (!$showtime) {
+
     die("Showtime not found.");
+
 }
 
 
-/* =========================================================
-   GET SEATS
-   IMPORTANT:
-   Database column = seat_row
-========================================================= */
+$screen_id = (int)$showtime['screen_id'];
 
-$seats = [];
 
-$seat_sql = "
+/*
+|--------------------------------------------------------------------------
+| GET SCREEN
+|--------------------------------------------------------------------------
+*/
+
+$stmt = $conn->prepare("
     SELECT
         id,
-        screen_id,
-        seat_row,
-        seat_number,
-        seat_type,
-        is_active
+        screen_name,
+        total_seats
+    FROM screens
+    WHERE id = ?
+    LIMIT 1
+");
 
-    FROM seats
-
-    WHERE screen_id = ?
-      AND is_active = 1
-
-    ORDER BY
-        seat_row ASC,
-        seat_number ASC
-";
-
-$stmt = $conn->prepare($seat_sql);
 
 if (!$stmt) {
+
     die(
-        "Seat query error: " .
-        $conn->error .
-        "<br><br>SQL:<br>" .
-        htmlspecialchars($seat_sql)
+        "Screen query error: " .
+        htmlspecialchars($conn->error)
     );
+
 }
+
 
 $stmt->bind_param(
     "i",
-    $showtime['screen_id']
+    $screen_id
 );
 
 $stmt->execute();
 
 $result = $stmt->get_result();
 
-while ($row = $result->fetch_assoc()) {
-    $seats[] = $row;
-}
+$screen = $result->fetch_assoc();
 
 $stmt->close();
 
 
-/* =========================================================
-   GET BOOKED SEATS
-========================================================= */
+if (!$screen) {
 
-$booked_seats = [];
+    die("Screen not found.");
 
-$booked_sql = "
-    SELECT bs.seat_id
-
-    FROM booking_seats bs
-
-    INNER JOIN bookings b
-        ON bs.booking_id = b.id
-
-    WHERE b.showtime_id = ?
-
-      AND b.booking_status IN (
-          'confirmed',
-          'pending'
-      )
-";
-
-$stmt = $conn->prepare($booked_sql);
-
-if ($stmt) {
-
-    $stmt->bind_param(
-        "i",
-        $showtime_id
-    );
-
-    $stmt->execute();
-
-    $result = $stmt->get_result();
-
-    while ($row = $result->fetch_assoc()) {
-
-        $booked_seats[] =
-            (int) $row['seat_id'];
-    }
-
-    $stmt->close();
 }
 
 
-/* =========================================================
-   GROUP SEATS BY ROW
-========================================================= */
+$total_screen_seats = (int)$screen['total_seats'];
+
+
+/*
+|--------------------------------------------------------------------------
+| AUTO CREATE SEATS IF SCREEN HAS NO SEATS
+|--------------------------------------------------------------------------
+|
+| IMPORTANT:
+|
+| New screen/movie ke liye agar seats table mein seats nahi hain,
+| to yahan automatically seats create hongi.
+|
+*/
+
+$count_stmt = $conn->prepare("
+    SELECT COUNT(*) AS total
+    FROM seats
+    WHERE screen_id = ?
+");
+
+
+if (!$count_stmt) {
+
+    die(
+        "Seat count query error: " .
+        htmlspecialchars($conn->error)
+    );
+
+}
+
+
+$count_stmt->bind_param(
+    "i",
+    $screen_id
+);
+
+$count_stmt->execute();
+
+$count_result = $count_stmt->get_result();
+
+$count_data = $count_result->fetch_assoc();
+
+$count_stmt->close();
+
+
+$existing_seat_count =
+    (int)$count_data['total'];
+
+
+/*
+|--------------------------------------------------------------------------
+| CREATE DEFAULT SEATS
+|--------------------------------------------------------------------------
+*/
+
+if (
+    $existing_seat_count === 0 &&
+    $total_screen_seats > 0
+) {
+
+    /*
+    |----------------------------------------------------------------------
+    | 10 seats per row
+    |----------------------------------------------------------------------
+    */
+
+    $seats_per_row = 10;
+
+
+    $insert_seat_stmt = $conn->prepare("
+        INSERT INTO seats
+        (
+            screen_id,
+            seat_row,
+            seat_number,
+            seat_type,
+            is_active
+        )
+        VALUES
+        (
+            ?,
+            ?,
+            ?,
+            'regular',
+            1
+        )
+    ");
+
+
+    if (!$insert_seat_stmt) {
+
+        die(
+            "Seat creation error: " .
+            htmlspecialchars($conn->error)
+        );
+
+    }
+
+
+    for (
+        $seat_index = 0;
+        $seat_index < $total_screen_seats;
+        $seat_index++
+    ) {
+
+        /*
+        |------------------------------------------------------------------
+        | ROW CALCULATION
+        |------------------------------------------------------------------
+        */
+
+        $row_number =
+            intdiv(
+                $seat_index,
+                $seats_per_row
+            );
+
+
+        /*
+        |------------------------------------------------------------------
+        | A, B, C, ... Z, AA, AB...
+        |------------------------------------------------------------------
+        */
+
+        $row_name = '';
+
+        $n = $row_number + 1;
+
+
+        while ($n > 0) {
+
+            $remainder =
+                ($n - 1) % 26;
+
+            $row_name =
+                chr(
+                    65 + $remainder
+                ) . $row_name;
+
+            $n =
+                intdiv(
+                    $n - 1,
+                    26
+                );
+
+        }
+
+
+        $seat_number =
+            ($seat_index % $seats_per_row) + 1;
+
+
+        $insert_seat_stmt->bind_param(
+            "isi",
+            $screen_id,
+            $row_name,
+            $seat_number
+        );
+
+
+        if (!$insert_seat_stmt->execute()) {
+
+            $insert_seat_stmt->close();
+
+            die(
+                "Seat creation failed: " .
+                htmlspecialchars(
+                    $insert_seat_stmt->error
+                )
+            );
+
+        }
+
+    }
+
+
+    $insert_seat_stmt->close();
+
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| GET SEATS
+|--------------------------------------------------------------------------
+|
+| Yahan booked seats bhi check ho rahi hain.
+|
+*/
+
+$stmt = $conn->prepare("
+    SELECT
+        s.id,
+        s.screen_id,
+        s.seat_row,
+        s.seat_number,
+        s.seat_type,
+        s.is_active,
+
+        CASE
+            WHEN bs.seat_id IS NOT NULL
+            THEN 1
+            ELSE 0
+        END AS is_booked
+
+    FROM seats s
+
+    LEFT JOIN booking_seats bs
+        ON bs.seat_id = s.id
+
+    LEFT JOIN bookings b
+        ON b.id = bs.booking_id
+        AND b.showtime_id = ?
+        AND (
+            b.booking_status = 'pending'
+            OR
+            b.booking_status = 'confirmed'
+        )
+
+    WHERE s.screen_id = ?
+      AND s.is_active = 1
+
+    GROUP BY
+        s.id,
+        s.screen_id,
+        s.seat_row,
+        s.seat_number,
+        s.seat_type,
+        s.is_active
+
+    ORDER BY
+        s.seat_row ASC,
+        s.seat_number ASC
+");
+
+
+if (!$stmt) {
+
+    die(
+        "Seat query error: " .
+        htmlspecialchars($conn->error)
+    );
+
+}
+
+
+$stmt->bind_param(
+    "ii",
+    $showtime_id,
+    $screen_id
+);
+
+$stmt->execute();
+
+$seat_result = $stmt->get_result();
+
+
+$seats = [];
+
+
+while (
+    $row = $seat_result->fetch_assoc()
+) {
+
+    $seats[] = $row;
+
+}
+
+
+$stmt->close();
+
+
+/*
+|--------------------------------------------------------------------------
+| GROUP SEATS BY ROW
+|--------------------------------------------------------------------------
+*/
 
 $seat_rows = [];
 
-foreach ($seats as $seat) {
 
-    $row_name = strtoupper(
-        trim(
-            (string) $seat['seat_row']
+foreach (
+    $seats as $seat
+) {
+
+    $row_name =
+        strtoupper(
+            trim(
+                $seat['seat_row']
+            )
+        );
+
+
+    if (
+        !isset(
+            $seat_rows[$row_name]
         )
-    );
+    ) {
 
-    if ($row_name === '') {
-        continue;
+        $seat_rows[$row_name] = [];
+
     }
+
 
     $seat_rows[$row_name][] = $seat;
+
 }
 
 
-/* =========================================================
-   SEAT PRICE
-========================================================= */
+/*
+|--------------------------------------------------------------------------
+| PRICE
+|--------------------------------------------------------------------------
+*/
 
-function getSeatPrice($seat_type, $base_price)
-{
-    $seat_type = strtolower(
-        trim(
-            (string) $seat_type
-        )
+$ticket_price =
+    (float)$showtime['price'];
+
+
+/*
+|--------------------------------------------------------------------------
+| MOVIE NAME
+|--------------------------------------------------------------------------
+*/
+
+$movie_name = "Movie";
+
+
+$movie_stmt = $conn->prepare("
+    SELECT *
+    FROM movies
+    WHERE id = ?
+    LIMIT 1
+");
+
+
+if ($movie_stmt) {
+
+    $movie_stmt->bind_param(
+        "i",
+        $showtime['movie_id']
     );
 
-    $base_price = (float) $base_price;
+    $movie_stmt->execute();
 
-    if ($seat_type === 'vip') {
-        return $base_price * 2;
+    $movie_result =
+        $movie_stmt->get_result();
+
+    $movie = $movie_result->fetch_assoc();
+
+    $movie_stmt->close();
+
+
+    if ($movie) {
+
+        if (isset($movie['name'])) {
+
+            $movie_name = $movie['name'];
+
+        } elseif (isset($movie['title'])) {
+
+            $movie_name = $movie['title'];
+
+        } elseif (isset($movie['movie_name'])) {
+
+            $movie_name = $movie['movie_name'];
+
+        }
+
     }
 
-    if ($seat_type === 'recliner') {
-        return $base_price * 1.5;
-    }
-
-    return $base_price;
 }
 
 
-/* =========================================================
-   POSTER
-========================================================= */
+/*
+|--------------------------------------------------------------------------
+| COUNT AVAILABLE / BOOKED
+|--------------------------------------------------------------------------
+*/
 
-$poster = !empty($showtime['poster_image'])
-    ? $showtime['poster_image']
-    : "https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?auto=format&fit=crop&w=400&q=80";
+$available_count = 0;
+
+$booked_count = 0;
 
 
-/* =========================================================
-   DATE / TIME
-========================================================= */
+foreach (
+    $seats as $seat
+) {
 
-$formatted_date = date(
-    "d M Y",
-    strtotime($showtime['show_date'])
-);
+    if (
+        (int)$seat['is_booked'] === 1
+    ) {
 
-$formatted_time = date(
-    "h:i A",
-    strtotime($showtime['show_time'])
-);
+        $booked_count++;
+
+    } else {
+
+        $available_count++;
+
+    }
+
+}
 
 ?>
 
 <!DOCTYPE html>
+
 <html lang="en">
 
 <head>
@@ -264,65 +558,47 @@ $formatted_time = date(
     content="width=device-width, initial-scale=1.0"
 >
 
-<title>Select Seats | TicketFlix</title>
-
-
-<link
-    href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&display=swap"
-    rel="stylesheet"
->
-
-<link
-    rel="stylesheet"
-    href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css"
->
-
+<title>
+    Select Seats | TicketFlix
+</title>
 
 <style>
 
-/* =========================================================
-   GLOBAL
-========================================================= */
-
 * {
+    box-sizing: border-box;
     margin: 0;
     padding: 0;
-    box-sizing: border-box;
 }
 
 body {
 
-    min-height: 100vh;
-
-    font-family: 'Poppins', sans-serif;
-
-    color: #fff;
+    font-family:
+        Arial,
+        Helvetica,
+        sans-serif;
 
     background:
         radial-gradient(
-            circle at 10% 20%,
-            rgba(126, 63, 242, .22),
-            transparent 30%
-        ),
-        radial-gradient(
-            circle at 90% 80%,
-            rgba(212, 175, 55, .12),
-            transparent 30%
-        ),
-        #0b0711;
+            circle at top,
+            #32143f 0%,
+            #170b20 42%,
+            #09070d 100%
+        );
+
+    min-height: 100vh;
+
+    color: #fff;
 
 }
 
 
-/* =========================================================
-   HEADER
-========================================================= */
+/* HEADER */
 
 .header {
 
-    height: 75px;
+    width: 100%;
 
-    padding: 0 6%;
+    padding: 20px 6%;
 
     display: flex;
 
@@ -332,12 +608,13 @@ body {
 
     border-bottom:
         1px solid
-        rgba(212,175,55,.15);
+        rgba(255,255,255,.08);
 
     background:
-        rgba(11,7,17,.94);
+        rgba(10,7,14,.80);
 
-    backdrop-filter: blur(15px);
+    backdrop-filter:
+        blur(12px);
 
     position: sticky;
 
@@ -350,460 +627,253 @@ body {
 
 .logo {
 
-    color: #fff;
-
-    text-decoration: none;
-
-    font-size: 25px;
+    font-size: 28px;
 
     font-weight: 800;
 
 }
 
 
-.logo i {
-
-    color: #d4af37;
-
-    margin-right: 6px;
-
-}
-
-
 .logo span {
 
-    color: #d4af37;
+    color: #ff315f;
 
 }
 
 
 .back-btn {
 
+    color: white;
+
     text-decoration: none;
 
-    color: #ddd;
+    padding: 10px 18px;
 
-    padding: 9px 16px;
+    border-radius: 25px;
 
     border:
         1px solid
-        rgba(255,255,255,.1);
+        rgba(255,255,255,.15);
 
-    border-radius: 10px;
-
-    font-size: 12px;
-
-    transition: .3s;
+    background:
+        rgba(255,255,255,.06);
 
 }
 
 
 .back-btn:hover {
 
-    color: #d4af37;
-
-    border-color: #d4af37;
-
-    background:
-        rgba(212,175,55,.08);
+    background: #ff315f;
 
 }
 
 
-/* =========================================================
-   PAGE
-========================================================= */
+/* MAIN */
 
-.page {
+.container {
 
-    max-width: 1450px;
+    width: min(1200px,92%);
 
     margin: auto;
 
     padding:
-        32px 4% 60px;
+        45px 0 130px;
 
 }
 
 
-/* =========================================================
-   MOVIE INFO
-========================================================= */
+.page-title {
 
-.movie-info {
-
-    display: flex;
-
-    align-items: center;
-
-    gap: 18px;
-
-    padding: 18px;
-
-    margin-bottom: 32px;
-
-    border-radius: 18px;
-
-    background:
-        linear-gradient(
-            100deg,
-            rgba(126,63,242,.12),
-            rgba(255,255,255,.035)
-        );
-
-    border:
-        1px solid
-        rgba(212,175,55,.12);
-
-}
-
-
-.movie-poster {
-
-    width: 72px;
-
-    height: 95px;
-
-    object-fit: cover;
-
-    border-radius: 10px;
-
-    border:
-        1px solid
-        rgba(212,175,55,.4);
-
-}
-
-
-.movie-details h1 {
-
-    font-size: 23px;
+    text-align: center;
 
     margin-bottom: 8px;
 
-}
+    font-size: 34px;
 
-
-.movie-details p {
-
-    color: #999;
-
-    font-size: 12px;
-
-    margin: 4px 0;
+    font-weight: 800;
 
 }
 
 
-.movie-details i {
+.subtitle {
 
-    color: #d4af37;
+    text-align: center;
 
-    margin-right: 6px;
+    color: #aaa4b0;
 
-}
-
-
-/* =========================================================
-   LAYOUT
-========================================================= */
-
-.booking-layout {
-
-    display: grid;
-
-    grid-template-columns: 240px 1fr;
-
-    gap: 35px;
-
-    align-items: start;
+    margin-bottom: 20px;
 
 }
 
 
-/* =========================================================
-   SIDE PANEL
-========================================================= */
+/* MOVIE */
 
-.side-panel {
+.movie-name {
 
-    background:
-        linear-gradient(
-            145deg,
-            rgba(126,63,242,.14),
-            rgba(212,175,55,.045)
-        );
+    text-align: center;
 
-    border:
-        1px solid
-        rgba(212,175,55,.18);
+    color: #ff315f;
 
-    border-radius: 20px;
+    font-size: 19px;
 
-    padding: 20px;
+    font-weight: 700;
 
-    position: sticky;
-
-    top: 100px;
+    margin-bottom: 25px;
 
 }
 
 
-.side-panel h3 {
+/* INFO */
 
-    font-size: 15px;
-
-    margin-bottom: 18px;
-
-}
-
-
-.timing {
-
-    padding: 13px;
-
-    margin-bottom: 12px;
-
-    border-radius: 11px;
-
-    background:
-        rgba(255,255,255,.035);
-
-    border:
-        1px solid
-        rgba(255,255,255,.06);
-
-}
-
-
-.timing p {
-
-    color: #777;
-
-    font-size: 9px;
-
-    margin-bottom: 4px;
-
-}
-
-
-.timing strong {
-
-    color: #d4af37;
-
-    font-size: 14px;
-
-}
-
-
-.legend {
-
-    margin-top: 22px;
-
-}
-
-
-.legend-title {
-
-    color: #aaa;
-
-    font-size: 11px;
-
-    margin-bottom: 13px;
-
-}
-
-
-.legend-item {
+.show-info {
 
     display: flex;
 
+    justify-content: center;
+
     align-items: center;
 
-    gap: 9px;
+    gap: 12px;
+
+    flex-wrap: wrap;
+
+    margin-bottom: 30px;
+
+}
+
+
+.info-box {
+
+    padding:
+        12px 20px;
+
+    background:
+        rgba(255,255,255,.06);
+
+    border:
+        1px solid
+        rgba(255,255,255,.08);
+
+    border-radius: 12px;
+
+    color: #ddd;
+
+}
+
+
+.info-box strong {
+
+    color: #fff;
+
+}
+
+
+.price {
+
+    color: #ff315f !important;
+
+}
+
+
+/* AVAILABLE */
+
+.availability {
+
+    text-align: center;
+
+    margin-bottom: 30px;
 
     color: #aaa;
 
-    font-size: 10px;
+}
 
-    margin: 10px 0;
+
+.availability strong {
+
+    color: #fff;
 
 }
 
 
-.legend-seat {
+/* SCREEN */
 
-    width: 18px;
+.screen-area {
 
-    height: 18px;
+    width:
+        min(800px,100%);
 
-    border-radius: 5px;
-
-    border: 1px solid;
-
-}
-
-
-.legend-regular {
-
-    background:
-        rgba(126,63,242,.12);
-
-    border-color:
-        #8157c5;
-
-}
-
-
-.legend-vip {
-
-    background:
-        rgba(212,175,55,.12);
-
-    border-color:
-        #d4af37;
-
-}
-
-
-.legend-recliner {
-
-    background:
-        rgba(255,255,255,.08);
-
-    border-color:
-        #aaa;
-
-}
-
-
-.legend-selected {
-
-    background:
-        #d4af37;
-
-    border-color:
-        #ffe58a;
-
-}
-
-
-.legend-booked {
-
-    background:
-        #302c34;
-
-    border-color:
-        #444;
-
-}
-
-
-/* =========================================================
-   SEAT AREA
-========================================================= */
-
-.seat-area {
-
-    min-width: 0;
+    margin:
+        0 auto 45px;
 
     text-align: center;
 
 }
 
 
-.seat-area h2 {
-
-    font-size: 23px;
-
-    margin-bottom: 3px;
-
-}
-
-
-.seat-subtitle {
-
-    color: #777;
-
-    font-size: 11px;
-
-    margin-bottom: 22px;
-
-}
-
-
-/* =========================================================
-   SCREEN
-========================================================= */
-
-.screen-container {
-
-    width: 76%;
-
-    margin: 0 auto 48px;
-
-}
-
-
 .screen {
 
-    height: 38px;
+    height: 45px;
 
-    border-top:
-        6px solid
-        #d4af37;
+    width: 82%;
+
+    margin: auto;
 
     border-radius: 50%;
 
+    background:
+        linear-gradient(
+            to bottom,
+            #fff,
+            rgba(255,255,255,.1)
+        );
+
     box-shadow:
-        0 -5px 30px
-        rgba(212,175,55,.28);
-
-    position: relative;
-
-}
-
-
-.screen::after {
-
-    content: "SCREEN";
-
-    position: absolute;
-
-    top: 14px;
-
-    left: 50%;
+        0 10px 35px
+        rgba(255,255,255,.25);
 
     transform:
-        translateX(-50%);
-
-    color: #777;
-
-    font-size: 8px;
-
-    letter-spacing: 5px;
+        perspective(150px)
+        rotateX(-8deg);
 
 }
 
 
-/* =========================================================
-   SEAT MAP
-========================================================= */
+.screen-label {
 
-.seat-map {
+    margin-top: 13px;
 
-    display: flex;
+    color: #9c96a4;
 
-    flex-direction: column;
+    font-size: 13px;
 
-    align-items: center;
+    letter-spacing: 2px;
 
-    gap: 12px;
+    text-transform: uppercase;
+
+}
+
+
+/* SEATS */
+
+.seat-area {
+
+    width: 100%;
 
     overflow-x: auto;
 
     padding:
-        5px 10px 30px;
+        10px 5px 30px;
+
+}
+
+
+.seat-layout {
+
+    width: max-content;
+
+    min-width: 650px;
+
+    margin: auto;
 
 }
 
@@ -816,51 +886,46 @@ body {
 
     justify-content: center;
 
-    gap: 7px;
+    gap: 9px;
 
-    min-width: max-content;
+    margin-bottom: 14px;
 
 }
 
 
 .row-label {
 
-    width: 22px;
+    width: 32px;
 
-    margin-right: 5px;
+    color: #8e8995;
 
-    color: #d4af37;
+    font-weight: bold;
 
-    font-size: 10px;
+    font-size: 13px;
 
-    font-weight: 700;
-
-}
-
-
-.aisle {
-
-    width: 35px;
-
-    height: 1px;
+    text-align: center;
 
 }
 
 
-/* =========================================================
-   SEAT
-========================================================= */
+/* SEAT */
 
 .seat {
 
-    width: 36px;
+    width: 43px;
 
-    height: 32px;
+    height: 38px;
 
     border-radius:
-        7px 7px 9px 9px;
+        10px 10px 7px 7px;
 
-    position: relative;
+    border:
+        1px solid
+        rgba(255,255,255,.12);
+
+    background: #24202a;
+
+    color: #cfcbd3;
 
     display: flex;
 
@@ -868,56 +933,49 @@ body {
 
     justify-content: center;
 
-    font-family: 'Poppins';
-
-    font-size: 9px;
-
-    font-weight: 600;
-
     cursor: pointer;
 
-    transition:
-        .2s;
+    font-size: 11px;
+
+    font-weight: 700;
+
+    transition: .2s;
+
+    position: relative;
 
 }
 
 
-.seat::before {
+.seat::after {
 
     content: "";
 
     position: absolute;
 
-    left: 4px;
+    bottom: -5px;
 
-    right: 4px;
+    left: 7px;
 
-    bottom: -4px;
+    right: 7px;
 
-    height: 4px;
+    height: 5px;
 
     border-radius:
         0 0 5px 5px;
 
-    background: inherit;
-
-    opacity: .65;
+    background:
+        rgba(255,255,255,.08);
 
 }
 
 
-/* REGULAR */
+.seat:hover {
 
-.seat.regular {
+    transform:
+        translateY(-3px);
 
-    color: #cdbbff;
-
-    background:
-        rgba(126,63,242,.09);
-
-    border:
-        1px solid
-        #8157c5;
+    border-color:
+        #ff315f;
 
 }
 
@@ -926,45 +984,63 @@ body {
 
 .seat.vip {
 
-    color: #f4da7b;
+    border-color:
+        rgba(255,180,60,.25);
 
     background:
-        rgba(212,175,55,.08);
+        linear-gradient(
+            145deg,
+            #4b3420,
+            #2a211b
+        );
 
-    border:
-        1px solid
-        #d4af37;
+    color: #ffd98a;
 
 }
 
 
-/* RECLINER */
+/* BOOKED */
 
-.seat.recliner {
-
-    color: #eee;
+.seat.booked {
 
     background:
-        rgba(255,255,255,.07);
+        #111;
 
-    border:
-        1px solid
-        #aaa;
+    color:
+        #666;
+
+    border-color:
+        #333;
+
+    cursor:
+        not-allowed;
+
+    opacity:
+        .55;
 
 }
 
 
-/* HOVER */
+.seat.booked::before {
 
-.seat:not(.booked):hover {
+    content: "×";
 
-    transform:
-        translateY(-3px)
-        scale(1.06);
+    position: absolute;
 
-    box-shadow:
-        0 5px 18px
-        rgba(212,175,55,.25);
+    font-size: 22px;
+
+    color: #ff315f;
+
+    z-index: 2;
+
+}
+
+
+.seat.booked:hover {
+
+    transform: none;
+
+    border-color: #333;
 
 }
 
@@ -975,20 +1051,19 @@ body {
 
     background:
         linear-gradient(
-            135deg,
-            #d4af37,
-            #f4d76b
-        ) !important;
+            145deg,
+            #ff315f,
+            #c91443
+        );
 
     border-color:
-        #ffe58a !important;
+        #ff6c89;
 
-    color:
-        #1a1022 !important;
+    color: white;
 
     box-shadow:
-        0 0 17px
-        rgba(212,175,55,.55);
+        0 7px 20px
+        rgba(255,49,95,.4);
 
     transform:
         translateY(-3px);
@@ -996,146 +1071,181 @@ body {
 }
 
 
-/* BOOKED */
-
-.seat.booked {
+.seat.selected::after {
 
     background:
-        #2b2730 !important;
-
-    border-color:
-        #403b44 !important;
-
-    color:
-        #666 !important;
-
-    opacity:
-        .55;
-
-    cursor:
-        not-allowed;
+        #a70d38;
 
 }
 
 
-/* =========================================================
-   NO SEATS
-========================================================= */
+/* LEGEND */
 
-.no-seats {
+.legend {
 
-    padding: 55px 20px;
+    display: flex;
 
-    border-radius: 18px;
-
-    background:
-        rgba(255,255,255,.035);
-
-    border:
-        1px solid
-        rgba(255,255,255,.06);
-
-    color: #888;
-
-}
-
-
-.no-seats i {
-
-    display: block;
-
-    color: #d4af37;
-
-    font-size: 42px;
-
-    margin-bottom: 15px;
-
-}
-
-
-.no-seats h3 {
-
-    margin-bottom: 5px;
-
-}
-
-
-/* =========================================================
-   BOOKING BAR
-========================================================= */
-
-.booking-bar {
-
-    margin-top: 18px;
-
-    padding: 20px 24px;
-
-    display: grid;
-
-    grid-template-columns:
-        1fr auto auto;
+    justify-content: center;
 
     align-items: center;
 
     gap: 25px;
 
-    text-align: left;
+    flex-wrap: wrap;
 
-    background:
-        rgba(255,255,255,.045);
+    margin:
+        25px 0 45px;
+
+}
+
+
+.legend-item {
+
+    display: flex;
+
+    align-items: center;
+
+    gap: 8px;
+
+    color: #aaa4b0;
+
+    font-size: 13px;
+
+}
+
+
+.legend-seat {
+
+    width: 20px;
+
+    height: 18px;
+
+    border-radius: 5px;
+
+    background: #24202a;
 
     border:
         1px solid
-        rgba(212,175,55,.15);
-
-    border-radius: 18px;
-
-    box-shadow:
-        0 10px 40px
-        rgba(0,0,0,.25);
+        rgba(255,255,255,.12);
 
 }
 
 
-.selected-info small,
-.total-box small {
+.legend-seat.vip {
 
-    display: block;
-
-    color: #777;
-
-    font-size: 9px;
+    background: #4b3420;
 
 }
 
 
-.selected-seats-text {
+.legend-seat.selected {
 
-    color: #d4af37;
+    background: #ff315f;
+
+}
+
+
+.legend-seat.booked {
+
+    background: #111;
+
+    border-color: #333;
+
+}
+
+
+/* EMPTY */
+
+.empty {
+
+    text-align: center;
+
+    padding: 60px 20px;
+
+    color: #aaa4b0;
+
+}
+
+
+/* BOTTOM */
+
+.bottom-bar {
+
+    position: fixed;
+
+    left: 0;
+
+    right: 0;
+
+    bottom: 0;
+
+    z-index: 90;
+
+    background:
+        rgba(12,8,16,.94);
+
+    border-top:
+        1px solid
+        rgba(255,255,255,.1);
+
+    backdrop-filter:
+        blur(15px);
+
+    padding:
+        15px 6%;
+
+}
+
+
+.bottom-inner {
+
+    max-width: 1200px;
+
+    margin: auto;
+
+    display: flex;
+
+    justify-content: space-between;
+
+    align-items: center;
+
+    gap: 20px;
+
+}
+
+
+.selection-info {
+
+    display: flex;
+
+    flex-direction: column;
+
+    gap: 4px;
+
+}
+
+
+.selection-info .small {
+
+    color: #99939f;
 
     font-size: 12px;
 
-    font-weight: 600;
+}
 
-    margin-top: 4px;
+
+.selected-count {
+
+    font-size: 17px;
+
+    font-weight: 700;
 
 }
 
 
-.total-box {
+.total {
 
-    text-align: right;
-
-}
-
-
-.total-price {
-
-    color: #d4af37;
-
-    font-size: 23px;
-
-    font-weight: 800;
+    color: #ff315f;
 
 }
 
@@ -1144,168 +1254,97 @@ body {
 
     border: none;
 
-    cursor: pointer;
+    padding:
+        14px 28px;
 
-    padding: 13px 22px;
-
-    border-radius: 10px;
-
-    font-family: 'Poppins';
-
-    font-weight: 700;
-
-    color: #1a1022;
+    border-radius: 30px;
 
     background:
         linear-gradient(
             135deg,
-            #d4af37,
-            #f5db73
+            #ff315f,
+            #d91647
         );
 
-    transition: .3s;
+    color: white;
 
-}
+    font-size: 15px;
 
+    font-weight: 700;
 
-.continue-btn:hover {
+    cursor: pointer;
 
-    transform:
-        translateY(-2px);
-
-    box-shadow:
-        0 8px 25px
-        rgba(212,175,55,.3);
+    min-width: 180px;
 
 }
 
 
 .continue-btn:disabled {
 
-    opacity: .4;
+    opacity: .45;
 
     cursor: not-allowed;
 
-    transform: none;
-
-    box-shadow: none;
-
 }
 
 
-/* =========================================================
-   RESPONSIVE
-========================================================= */
+@media(max-width:650px) {
 
-@media(max-width: 1000px) {
-
-    .booking-layout {
-
-        grid-template-columns: 1fr;
-
-    }
-
-    .side-panel {
-
-        position: static;
-
-        display: grid;
-
-        grid-template-columns: 1fr 1fr;
-
-        gap: 15px;
-
-    }
-
-    .legend {
-
-        margin-top: 0;
-
-    }
-
-}
-
-
-@media(max-width: 700px) {
-
-    .page {
+    .header {
 
         padding:
-            20px 10px 35px;
+            17px 4%;
 
     }
 
-    .movie-info {
+    .logo {
 
-        padding: 12px;
-
-    }
-
-    .movie-poster {
-
-        width: 55px;
-
-        height: 75px;
+        font-size: 23px;
 
     }
 
-    .movie-details h1 {
+    .container {
 
-        font-size: 17px;
+        width: 94%;
 
-    }
-
-    .side-panel {
-
-        grid-template-columns: 1fr;
+        padding-top: 30px;
 
     }
 
-    .screen-container {
+    .page-title {
 
-        width: 95%;
+        font-size: 27px;
 
     }
 
     .seat {
 
-        width: 30px;
+        width: 38px;
 
-        height: 28px;
+        height: 35px;
 
-        font-size: 7px;
+        font-size: 10px;
 
     }
 
     .seat-row {
 
-        gap: 5px;
+        gap: 6px;
 
     }
 
-    .aisle {
+    .bottom-inner {
 
-        width: 15px;
-
-    }
-
-    .booking-bar {
-
-        grid-template-columns: 1fr;
-
-        text-align: center;
-
-    }
-
-    .total-box {
-
-        text-align: center;
+        align-items: center;
 
     }
 
     .continue-btn {
 
-        width: 100%;
+        min-width: 140px;
+
+        padding:
+            12px 18px;
 
     }
 
@@ -1319,197 +1358,325 @@ body {
 <body>
 
 
-<!-- =========================================================
-     HEADER
-========================================================= -->
-
 <header class="header">
 
-    <a href="index.php" class="logo">
-
-        <i class="fa-solid fa-ticket"></i>
+    <div class="logo">
 
         Ticket<span>Flix</span>
 
-    </a>
+    </div>
 
 
     <a
-        href="showtimes.php"
+        href="javascript:history.back()"
         class="back-btn"
     >
 
-        <i class="fa-solid fa-arrow-left"></i>
-
-        Back
+        ← Back
 
     </a>
 
 </header>
 
 
-<div class="page">
+
+<main class="container">
 
 
-<!-- =========================================================
-     MOVIE INFO
-========================================================= -->
+    <h1 class="page-title">
 
-<div class="movie-info">
+        Select Your Seats
 
-    <img
-        src="<?php echo htmlspecialchars($poster); ?>"
-        class="movie-poster"
-        alt="Movie Poster"
-    >
+    </h1>
 
 
-    <div class="movie-details">
+    <p class="subtitle">
 
-        <h1>
-            <?php
-            echo htmlspecialchars(
-                $showtime['movie_name']
-            );
-            ?>
-        </h1>
+        Choose your favourite seats
+        and enjoy the show
+
+    </p>
 
 
-        <p>
+    <div class="movie-name">
 
-            <i class="fa-solid fa-building"></i>
-
-            <?php
-            echo htmlspecialchars(
-                $showtime['theater_name']
-            );
-            ?>
-
-        </p>
-
-
-        <p>
-
-            <i class="fa-solid fa-calendar"></i>
-
-            <?php
-            echo htmlspecialchars(
-                $formatted_date
-            );
-            ?>
-
-            &nbsp;&nbsp;
-
-            <i class="fa-solid fa-clock"></i>
-
-            <?php
-            echo htmlspecialchars(
-                $formatted_time
-            );
-            ?>
-
-        </p>
-
-    </div>
-
-</div>
-
-
-<!-- =========================================================
-     BOOKING LAYOUT
-========================================================= -->
-
-<div class="booking-layout">
-
-
-<!-- =========================================================
-     SIDE PANEL
-========================================================= -->
-
-<aside class="side-panel">
-
-    <div>
-
-        <h3>
-
-            <i
-                class="fa-solid fa-clock"
-                style="color:#d4af37;"
-            ></i>
-
-            Show Details
-
-        </h3>
-
-
-        <div class="timing">
-
-            <p>DATE</p>
-
-            <strong>
-                <?php
-                echo htmlspecialchars(
-                    $formatted_date
-                );
-                ?>
-            </strong>
-
-        </div>
-
-
-        <div class="timing">
-
-            <p>SHOW TIME</p>
-
-            <strong>
-                <?php
-                echo htmlspecialchars(
-                    $formatted_time
-                );
-                ?>
-            </strong>
-
-        </div>
-
-
-        <div class="timing">
-
-            <p>SCREEN</p>
-
-            <strong>
-                <?php
-                echo htmlspecialchars(
-                    $showtime['screen_name']
-                );
-                ?>
-            </strong>
-
-        </div>
+        <?= htmlspecialchars($movie_name); ?>
 
     </div>
 
 
-    <!-- LEGEND -->
+
+    <div class="show-info">
+
+
+        <div class="info-box">
+
+            Screen
+
+            <strong>
+
+                <?= htmlspecialchars(
+                    $screen['screen_name']
+                ); ?>
+
+            </strong>
+
+        </div>
+
+
+        <div class="info-box">
+
+            Date
+
+            <strong>
+
+                <?= htmlspecialchars(
+                    date(
+                        "d M Y",
+                        strtotime(
+                            $showtime['show_date']
+                        )
+                    )
+                ); ?>
+
+            </strong>
+
+        </div>
+
+
+        <div class="info-box">
+
+            Time
+
+            <strong>
+
+                <?= htmlspecialchars(
+                    date(
+                        "h:i A",
+                        strtotime(
+                            $showtime['show_time']
+                        )
+                    )
+                ); ?>
+
+            </strong>
+
+        </div>
+
+
+        <div class="info-box">
+
+            Price
+
+            <strong class="price">
+
+                ₹<?= number_format(
+                    $ticket_price,
+                    2
+                ); ?>
+
+            </strong>
+
+        </div>
+
+
+    </div>
+
+
+
+    <div class="availability">
+
+        Available:
+
+        <strong>
+            <?= $available_count; ?>
+        </strong>
+
+        &nbsp; | &nbsp;
+
+        Booked:
+
+        <strong>
+            <?= $booked_count; ?>
+        </strong>
+
+        &nbsp; | &nbsp;
+
+        Total:
+
+        <strong>
+            <?= count($seats); ?>
+        </strong>
+
+    </div>
+
+
+
+    <div class="screen-area">
+
+        <div class="screen"></div>
+
+        <div class="screen-label">
+
+            Screen
+
+        </div>
+
+    </div>
+
+
+
+    <?php if (count($seat_rows) > 0): ?>
+
+
+        <div class="seat-area">
+
+
+            <div class="seat-layout">
+
+
+                <?php foreach (
+                    $seat_rows as
+                    $row_name => $row_seats
+                ): ?>
+
+
+                    <div class="seat-row">
+
+
+                        <div class="row-label">
+
+                            <?= htmlspecialchars(
+                                $row_name
+                            ); ?>
+
+                        </div>
+
+
+
+                        <?php foreach (
+                            $row_seats as
+                            $index => $seat
+                        ): ?>
+
+
+                            <?php if (
+                                $index === 5
+                            ): ?>
+
+                                <div
+                                    style="width:28px;"
+                                ></div>
+
+                            <?php endif; ?>
+
+
+                            <?php
+
+                            $seat_type =
+                                strtolower(
+                                    trim(
+                                        $seat['seat_type']
+                                    )
+                                );
+
+
+                            $is_booked =
+                                (int)$seat['is_booked']
+                                === 1;
+
+
+                            $seat_class =
+                                'seat';
+
+
+                            if (
+                                $seat_type === 'vip'
+                            ) {
+
+                                $seat_class .= ' vip';
+
+                            }
+
+
+                            if ($is_booked) {
+
+                                $seat_class .= ' booked';
+
+                            }
+
+                            ?>
+
+
+                            <button
+                                type="button"
+                                class="<?= $seat_class; ?>"
+                                data-seat-id="<?= (int)$seat['id']; ?>"
+                                data-seat-row="<?= htmlspecialchars($row_name); ?>"
+                                data-seat-number="<?= (int)$seat['seat_number']; ?>"
+                                data-seat-type="<?= htmlspecialchars($seat_type); ?>"
+                                data-price="<?= htmlspecialchars($ticket_price); ?>"
+                                <?= $is_booked ? 'disabled' : ''; ?>
+                            >
+
+                                <?= htmlspecialchars(
+                                    $row_name
+                                ); ?>
+
+                                <?= (int)$seat['seat_number']; ?>
+
+                            </button>
+
+
+                        <?php endforeach; ?>
+
+
+                    </div>
+
+
+                <?php endforeach; ?>
+
+
+            </div>
+
+        </div>
+
+
+    <?php else: ?>
+
+
+        <div class="empty">
+
+            <h3>
+                No seats available
+            </h3>
+
+            <p>
+                This screen has no seats configured.
+            </p>
+
+        </div>
+
+
+    <?php endif; ?>
+
+
 
     <div class="legend">
 
-        <div class="legend-title">
-            SEAT TYPES
+
+        <div class="legend-item">
+
+            <div class="legend-seat"></div>
+
+            Available
+
         </div>
 
 
         <div class="legend-item">
 
-            <span class="legend-seat legend-regular"></span>
-
-            Regular
-
-        </div>
-
-
-        <div class="legend-item">
-
-            <span class="legend-seat legend-vip"></span>
+            <div class="legend-seat vip"></div>
 
             VIP
 
@@ -1518,16 +1685,7 @@ body {
 
         <div class="legend-item">
 
-            <span class="legend-seat legend-recliner"></span>
-
-            Recliner
-
-        </div>
-
-
-        <div class="legend-item">
-
-            <span class="legend-seat legend-selected"></span>
+            <div class="legend-seat selected"></div>
 
             Selected
 
@@ -1536,335 +1694,87 @@ body {
 
         <div class="legend-item">
 
-            <span class="legend-seat legend-booked"></span>
+            <div class="legend-seat booked"></div>
 
             Booked
 
         </div>
 
-    </div>
-
-</aside>
-
-
-<!-- =========================================================
-     SEAT AREA
-========================================================= -->
-
-<section class="seat-area">
-
-
-    <h2>
-        Select Your Seats
-    </h2>
-
-
-    <p class="seat-subtitle">
-        Choose your preferred seats
-    </p>
-
-
-    <!-- SCREEN -->
-
-    <div class="screen-container">
-
-        <div class="screen"></div>
 
     </div>
 
 
-    <!-- =====================================================
-         SEAT MAP
-    ===================================================== -->
-
-    <?php if (!empty($seat_rows)): ?>
-
-        <div class="seat-map">
-
-        <?php
-
-        /*
-         * Reference design:
-         *
-         * A B
-         *
-         * C D     E F
-         *
-         * G H     I J
-         */
-
-        $left_rows = [
-            'A',
-            'B',
-            'C',
-            'D',
-            'G',
-            'H'
-        ];
-
-        $right_rows = [
-            'E',
-            'F',
-            'I',
-            'J'
-        ];
+</main>
 
 
-        foreach ($seat_rows as $row_name => $row_seats):
 
-        ?>
+<div class="bottom-bar">
 
-            <div class="seat-row">
 
-                <span class="row-label">
-                    <?php echo htmlspecialchars($row_name); ?>
+    <div class="bottom-inner">
+
+
+        <div class="selection-info">
+
+
+            <span class="small">
+
+                Selected Seats
+
+            </span>
+
+
+            <span class="selected-count">
+
+                <span id="selectedCount">
+                    0
                 </span>
 
+                seat(s)
 
-                <?php
+                &nbsp; • &nbsp;
 
-                foreach ($row_seats as $index => $seat):
+                <span class="total">
 
-                    /*
-                     * Center aisle for rows
-                     * having 9 seats.
-                     */
-
-                    if ($index == 5 && in_array(
-                        $row_name,
-                        ['C','D','E','F','G','H','I','J']
-                    )):
-
-                    ?>
-
-                        <span class="aisle"></span>
-
-                    <?php
-
-                    endif;
-
-
-                    $seat_id =
-                        (int) $seat['id'];
-
-
-                    $seat_type =
-                        strtolower(
-                            trim(
-                                (string)
-                                $seat['seat_type']
-                            )
-                        );
-
-
-                    if ($seat_type === 'vip') {
-
-                        $type_class = 'vip';
-
-                    } elseif ($seat_type === 'recliner') {
-
-                        $type_class = 'recliner';
-
-                    } else {
-
-                        $type_class = 'regular';
-
-                    }
-
-
-                    $is_booked =
-                        in_array(
-                            $seat_id,
-                            $booked_seats,
-                            true
-                        );
-
-
-                    $seat_price =
-                        getSeatPrice(
-                            $seat_type,
-                            $showtime['price']
-                        );
-
-                ?>
-
-                    <button
-                        type="button"
-
-                        class="
-                            seat
-                            <?php echo $type_class; ?>
-                            <?php
-                            echo $is_booked
-                                ? 'booked'
-                                : '';
-                            ?>
-                        "
-
-                        data-id="<?php
-                            echo $seat_id;
-                        ?>"
-
-                        data-seat="<?php
-                            echo htmlspecialchars(
-                                $row_name .
-                                $seat['seat_number']
-                            );
-                        ?>"
-
-                        data-type="<?php
-                            echo htmlspecialchars(
-                                $seat_type
-                            );
-                        ?>"
-
-                        data-price="<?php
-                            echo number_format(
-                                $seat_price,
-                                2,
-                                '.',
-                                ''
-                            );
-                        ?>"
-
-                        <?php
-                        echo $is_booked
-                            ? 'disabled'
-                            : '';
-                        ?>
-                    >
-
-                        <?php
-                        echo htmlspecialchars(
-                            $row_name .
-                            $seat['seat_number']
-                        );
-                        ?>
-
-                    </button>
-
-                <?php endforeach; ?>
-
-            </div>
-
-        <?php endforeach; ?>
-
-        </div>
-
-    <?php else: ?>
-
-        <div class="no-seats">
-
-            <i class="fa-solid fa-chair"></i>
-
-            <h3>
-                No Seats Available
-            </h3>
-
-            <p>
-                No seats have been added
-                for this screen yet.
-            </p>
-
-        </div>
-
-    <?php endif; ?>
-
-
-    <!-- =====================================================
-         BOOKING FORM
-    ===================================================== -->
-
-    <form
-        method="POST"
-        action="booking.php"
-        id="bookingForm"
-    >
-
-        <input
-            type="hidden"
-            name="showtime_id"
-            value="<?php echo $showtime_id; ?>"
-        >
-
-
-        <div id="seatInputs"></div>
-
-
-        <input
-            type="hidden"
-            name="total_amount"
-            id="totalAmountInput"
-            value="0.00"
-        >
-
-
-        <!-- BOOKING BAR -->
-
-        <div class="booking-bar">
-
-            <div class="selected-info">
-
-                <small>
-                    SELECTED SEATS
-                </small>
-
-                <div
-                    class="selected-seats-text"
-                    id="selectedSeatsText"
-                >
-                    No seats selected
-                </div>
-
-            </div>
-
-
-            <div class="total-box">
-
-                <small>
-                    TOTAL AMOUNT
-                </small>
-
-                <div class="total-price">
-
-                    ₹<span id="totalAmount">
+                    ₹<span id="totalPrice">
                         0.00
                     </span>
 
-                </div>
+                </span>
 
-            </div>
+            </span>
 
-
-            <button
-                type="submit"
-                class="continue-btn"
-                id="continueBtn"
-                disabled
-            >
-
-                Continue to Booking
-
-                <i class="fa-solid fa-arrow-right"></i>
-
-            </button>
 
         </div>
 
-    </form>
 
-</section>
+
+        <button
+            type="button"
+            class="continue-btn"
+            id="continueBtn"
+            disabled
+        >
+
+            Continue
+
+        </button>
+
+
+    </div>
 
 </div>
 
-</div>
 
 
 <script>
 
-/* =========================================================
-   ELEMENTS
-========================================================= */
+
+/*
+|--------------------------------------------------------------------------
+| ELEMENTS
+|--------------------------------------------------------------------------
+*/
 
 const seats =
     document.querySelectorAll(
@@ -1872,27 +1782,15 @@ const seats =
     );
 
 
-const selectedSeatsText =
+const selectedCount =
     document.getElementById(
-        "selectedSeatsText"
+        "selectedCount"
     );
 
 
-const totalAmount =
+const totalPrice =
     document.getElementById(
-        "totalAmount"
-    );
-
-
-const seatInputs =
-    document.getElementById(
-        "seatInputs"
-    );
-
-
-const totalAmountInput =
-    document.getElementById(
-        "totalAmountInput"
+        "totalPrice"
     );
 
 
@@ -1902,39 +1800,37 @@ const continueBtn =
     );
 
 
-const bookingForm =
-    document.getElementById(
-        "bookingForm"
-    );
-
-
-/* =========================================================
-   VARIABLES
-========================================================= */
-
 let selectedSeats = [];
 
-let total = 0;
 
-
-/* =========================================================
-   SEAT CLICK
-========================================================= */
+/*
+|--------------------------------------------------------------------------
+| SEAT CLICK
+|--------------------------------------------------------------------------
+*/
 
 seats.forEach(function(seat) {
+
 
     seat.addEventListener(
         "click",
         function() {
 
-            const id =
-                String(
-                    this.dataset.id
-                );
+
+            const seatId =
+                this.dataset.seatId;
 
 
-            const seatName =
-                this.dataset.seat;
+            const seatRow =
+                this.dataset.seatRow;
+
+
+            const seatNumber =
+                this.dataset.seatNumber;
+
+
+            const seatType =
+                this.dataset.seatType;
 
 
             const price =
@@ -1943,71 +1839,65 @@ seats.forEach(function(seat) {
                 ) || 0;
 
 
-            const existing =
-                selectedSeats.find(
+            const existingIndex =
+                selectedSeats.findIndex(
                     function(item) {
 
-                        return item.id === id;
+                        return (
+                            item.id ===
+                            seatId
+                        );
 
                     }
                 );
 
 
-            /* REMOVE */
+            /*
+            |--------------------------------------------------------------------------
+            | UNSELECT
+            |--------------------------------------------------------------------------
+            */
 
-            if (existing) {
-
-                selectedSeats =
-                    selectedSeats.filter(
-                        function(item) {
-
-                            return item.id !== id;
-
-                        }
-                    );
+            if (
+                existingIndex !== -1
+            ) {
 
 
-                total -= existing.price;
-
-
-                total =
-                    Math.max(
-                        0,
-                        Math.round(
-                            total * 100
-                        ) / 100
-                    );
+                selectedSeats.splice(
+                    existingIndex,
+                    1
+                );
 
 
                 this.classList.remove(
                     "selected"
                 );
 
+
             }
 
-
-            /* ADD */
+            /*
+            |--------------------------------------------------------------------------
+            | SELECT
+            |--------------------------------------------------------------------------
+            */
 
             else {
 
+
                 selectedSeats.push({
 
-                    id: id,
+                    id: seatId,
 
-                    name: seatName,
+                    row: seatRow,
+
+                    number: seatNumber,
+
+                    type: seatType,
 
                     price: price
 
                 });
-
-
-                total += price;
-
-
-                total =
-                    Math.round(
-                        total * 100
-                    ) / 100;
 
 
                 this.classList.add(
@@ -2017,79 +1907,43 @@ seats.forEach(function(seat) {
             }
 
 
-            updateBooking();
+            updateSelection();
+
 
         }
     );
 
+
 });
 
 
-/* =========================================================
-   UPDATE BOOKING
-========================================================= */
+/*
+|--------------------------------------------------------------------------
+| UPDATE
+|--------------------------------------------------------------------------
+*/
 
-function updateBooking() {
-
-    if (
-        selectedSeats.length === 0
-    ) {
-
-        selectedSeatsText.textContent =
-            "No seats selected";
-
-    } else {
-
-        selectedSeatsText.textContent =
-            selectedSeats
-                .map(function(seat) {
-
-                    return seat.name;
-
-                })
-                .join(" • ");
-
-    }
+function updateSelection() {
 
 
-    totalAmount.textContent =
-        total.toFixed(2);
+    selectedCount.textContent =
+        selectedSeats.length;
 
 
-    totalAmountInput.value =
-        total.toFixed(2);
-
-
-    seatInputs.innerHTML = "";
+    let total = 0;
 
 
     selectedSeats.forEach(
         function(seat) {
 
-            const input =
-                document.createElement(
-                    "input"
-                );
-
-
-            input.type =
-                "hidden";
-
-
-            input.name =
-                "seat_ids[]";
-
-
-            input.value =
-                seat.id;
-
-
-            seatInputs.appendChild(
-                input
-            );
+            total += seat.price;
 
         }
     );
+
+
+    totalPrice.textContent =
+        total.toFixed(2);
 
 
     continueBtn.disabled =
@@ -2098,19 +1952,20 @@ function updateBooking() {
 }
 
 
-/* =========================================================
-   FORM VALIDATION
-========================================================= */
+/*
+|--------------------------------------------------------------------------
+| CONTINUE
+|--------------------------------------------------------------------------
+*/
 
-bookingForm.addEventListener(
-    "submit",
-    function(event) {
+continueBtn.addEventListener(
+    "click",
+    function() {
+
 
         if (
             selectedSeats.length === 0
         ) {
-
-            event.preventDefault();
 
             alert(
                 "Please select at least one seat."
@@ -2121,34 +1976,91 @@ bookingForm.addEventListener(
         }
 
 
-        if (
-            !Number.isFinite(total) ||
-            total <= 0
-        ) {
-
-            event.preventDefault();
-
-            alert(
-                "Invalid booking amount."
+        const form =
+            document.createElement(
+                "form"
             );
 
-            return;
 
-        }
+        form.method = "POST";
+
+        form.action = "booking.php";
 
 
-        totalAmountInput.value =
-            total.toFixed(2);
+        /*
+        |----------------------------------------------------------------------
+        | SHOWTIME
+        |----------------------------------------------------------------------
+        */
+
+        const showtimeInput =
+            document.createElement(
+                "input"
+            );
+
+
+        showtimeInput.type =
+            "hidden";
+
+        showtimeInput.name =
+            "showtime_id";
+
+        showtimeInput.value =
+            "<?= (int)$showtime_id; ?>";
+
+
+        form.appendChild(
+            showtimeInput
+        );
+
+
+        /*
+        |----------------------------------------------------------------------
+        | SEATS
+        |----------------------------------------------------------------------
+        */
+
+        selectedSeats.forEach(
+            function(seat) {
+
+
+                const input =
+                    document.createElement(
+                        "input"
+                    );
+
+
+                input.type =
+                    "hidden";
+
+
+                input.name =
+                    "seat_ids[]";
+
+
+                input.value =
+                    seat.id;
+
+
+                form.appendChild(
+                    input
+                );
+
+
+            }
+        );
+
+
+        document.body.appendChild(
+            form
+        );
+
+
+        form.submit();
+
 
     }
 );
-
-
-/* =========================================================
-   INITIAL
-========================================================= */
-
-updateBooking();
 
 </script>
 
