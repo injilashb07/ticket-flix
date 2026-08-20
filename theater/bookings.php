@@ -2,181 +2,261 @@
 
 session_start();
 
-require_once "../config.php";
+require_once 'config.php';
 
-/* =========================================================
-   THEATER LOGIN CHECK
-========================================================= */
 
-if (
-    !isset($_SESSION['theater_user_id']) ||
-    !isset($_SESSION['theater_id'])
-) {
+/*
+|--------------------------------------------------------------------------
+| LOGIN CHECK
+|--------------------------------------------------------------------------
+*/
+
+if (!isset($_SESSION['user_id'])) {
     header("Location: login.php");
     exit();
 }
 
-$theater_id = (int) $_SESSION['theater_id'];
 
-$theater_user_name =
-    $_SESSION['theater_user_name'] ?? "Theater User";
+/*
+|--------------------------------------------------------------------------
+| GET DATA FROM SEATS PAGE
+|--------------------------------------------------------------------------
+*/
+
+$showtime_id = isset($_POST['showtime_id'])
+    ? (int)$_POST['showtime_id']
+    : 0;
+
+$seat_ids = isset($_POST['seat_ids']) && is_array($_POST['seat_ids'])
+    ? array_map('intval', $_POST['seat_ids'])
+    : [];
 
 
-/* =========================================================
-   GET THEATER DETAILS
-========================================================= */
+if ($showtime_id <= 0 || empty($seat_ids)) {
+    die("Invalid booking information.");
+}
 
-$theater = null;
+
+/*
+|--------------------------------------------------------------------------
+| GET SHOWTIME + MOVIE + SCREEN + THEATER
+|--------------------------------------------------------------------------
+*/
 
 $stmt = $conn->prepare("
-    SELECT *
-    FROM theaters
-    WHERE id = ?
-    LIMIT 1
-");
-
-$stmt->bind_param("i", $theater_id);
-$stmt->execute();
-
-$result = $stmt->get_result();
-
-if ($result->num_rows > 0) {
-    $theater = $result->fetch_assoc();
-}
-
-$stmt->close();
-
-
-if (!$theater) {
-    session_destroy();
-    header("Location: login.php");
-    exit();
-}
-
-
-$theater_name =
-    $theater['name'] ?? "My Theater";
-
-$theater_location =
-    $theater['location']
-    ?? ($theater['address'] ?? "Location not available");
-
-
-/* =========================================================
-   GET BOOKINGS FOR THIS THEATER
-========================================================= */
-
-$bookings = [];
-
-$sql = "
-
     SELECT
-
-        b.id AS booking_id,
-        b.user_id,
-        b.showtime_id,
-        b.total_amount,
-        b.booking_status,
-        b.payment_status,
-        b.booking_reference,
-
+        st.id AS showtime_id,
         st.show_date,
         st.show_time,
         st.price,
 
         m.name AS movie_name,
-        m.poster_image,
 
         s.screen_name,
 
-        CONCAT(
-            COALESCE(u.first_name, ''),
-            ' ',
-            COALESCE(u.last_name, '')
-        ) AS customer_name,
+        t.name AS theater_name,
+        t.city,
+        t.state
 
-        u.email AS customer_email
-
-    FROM bookings b
-
-    INNER JOIN showtimes st
-        ON b.showtime_id = st.id
-
-    INNER JOIN screens s
-        ON st.screen_id = s.id
+    FROM showtimes st
 
     INNER JOIN movies m
         ON st.movie_id = m.id
 
-    LEFT JOIN users u
-        ON b.user_id = u.id
+    INNER JOIN screens s
+        ON st.screen_id = s.id
 
-    WHERE s.theater_id = ?
+    INNER JOIN theaters t
+        ON s.theater_id = t.id
 
-    ORDER BY b.id DESC
+    WHERE st.id = ?
 
-";
+    LIMIT 1
+");
 
 
-$stmt = $conn->prepare($sql);
+if (!$stmt) {
+    die("Showtime query error: " . htmlspecialchars($conn->error));
+}
 
-$stmt->bind_param(
-    "i",
-    $theater_id
-);
+
+$stmt->bind_param("i", $showtime_id);
 
 $stmt->execute();
 
 $result = $stmt->get_result();
 
-
-while ($row = $result->fetch_assoc()) {
-    $bookings[] = $row;
-}
+$showtime = $result->fetch_assoc();
 
 $stmt->close();
 
 
-/* =========================================================
-   BOOKING STATISTICS
-========================================================= */
-
-$total_bookings = count($bookings);
-
-$confirmed_bookings = 0;
-
-$pending_bookings = 0;
-
-$total_revenue = 0;
+if (!$showtime) {
+    die("Showtime not found.");
+}
 
 
-foreach ($bookings as $booking) {
+/*
+|--------------------------------------------------------------------------
+| GET SELECTED SEATS
+|--------------------------------------------------------------------------
+*/
 
-    $status = strtolower(
-        trim($booking['booking_status'] ?? '')
-    );
+$seat_ids = array_values(
+    array_filter(
+        $seat_ids,
+        function ($id) {
+            return $id > 0;
+        }
+    )
+);
 
 
-    if ($status === "confirmed") {
-
-        $confirmed_bookings++;
-
-        $total_revenue +=
-            (float) $booking['total_amount'];
-
-    }
+$placeholders = implode(
+    ',',
+    array_fill(0, count($seat_ids), '?')
+);
 
 
-    if ($status === "pending") {
+$types = str_repeat('i', count($seat_ids));
 
-        $pending_bookings++;
+
+$sql = "
+    SELECT
+        id,
+        seat_row,
+        seat_number,
+        seat_type
+
+    FROM seats
+
+    WHERE id IN ($placeholders)
+
+    ORDER BY
+        seat_row ASC,
+        seat_number ASC
+";
+
+
+$stmt = $conn->prepare($sql);
+
+
+if (!$stmt) {
+    die("Seat query error: " . htmlspecialchars($conn->error));
+}
+
+
+$stmt->bind_param($types, ...$seat_ids);
+
+$stmt->execute();
+
+$seat_result = $stmt->get_result();
+
+
+$selected_seats = [];
+
+
+while ($seat = $seat_result->fetch_assoc()) {
+    $selected_seats[] = $seat;
+}
+
+
+$stmt->close();
+
+
+if (empty($selected_seats)) {
+    die("Selected seats not found.");
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| CALCULATE TOTAL
+|--------------------------------------------------------------------------
+*/
+
+$ticket_price = (float)$showtime['price'];
+
+$seat_count = count($selected_seats);
+
+$subtotal = $ticket_price * $seat_count;
+
+
+/*
+|--------------------------------------------------------------------------
+| DUMMY CONVENIENCE FEE
+|--------------------------------------------------------------------------
+*/
+
+$booking_fee = 0;
+
+$total_amount = $subtotal + $booking_fee;
+
+
+/*
+|--------------------------------------------------------------------------
+| CREATE SEAT LABELS
+|--------------------------------------------------------------------------
+*/
+
+$seat_labels = [];
+
+foreach ($selected_seats as $seat) {
+
+    $seat_labels[] =
+        $seat['seat_row'] .
+        $seat['seat_number'];
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| SUCCESS STATE
+|--------------------------------------------------------------------------
+*/
+
+$payment_success = false;
+
+$booking_number = '';
+
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST'
+    && isset($_POST['dummy_payment'])) {
+
+    $payment_method =
+        isset($_POST['payment_method'])
+            ? trim($_POST['payment_method'])
+            : '';
+
+    if ($payment_method !== '') {
+
+        $payment_success = true;
+
+        /*
+        | Dummy booking number
+        */
+
+        $booking_number =
+            'TF' .
+            date('Ymd') .
+            strtoupper(
+                substr(
+                    md5(
+                        uniqid(
+                            (string)$showtime_id,
+                            true
+                        )
+                    ),
+                    0,
+                    6
+                )
+            );
 
     }
 
 }
 
 ?>
-
 
 <!DOCTYPE html>
 
@@ -191,238 +271,42 @@ foreach ($bookings as $booking) {
     content="width=device-width, initial-scale=1.0"
 >
 
-<title>Bookings | TicketFlix</title>
-
-
-<link
-    href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&display=swap"
-    rel="stylesheet"
->
-
-
-<link
-    rel="stylesheet"
-    href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css"
->
+<title>
+    <?= $payment_success
+        ? 'Booking Confirmed | TicketFlix'
+        : 'Payment | TicketFlix'
+    ?>
+</title>
 
 
 <style>
 
-/* =========================================================
-   GLOBAL
-========================================================= */
-
 * {
+    box-sizing: border-box;
     margin: 0;
     padding: 0;
-    box-sizing: border-box;
 }
 
 
 body {
 
-    min-height: 100vh;
-
-    font-family: 'Poppins', sans-serif;
+    font-family:
+        Arial,
+        Helvetica,
+        sans-serif;
 
     background:
         radial-gradient(
-            circle at top right,
-            rgba(126,87,194,.25),
-            transparent 35%
-        ),
-        #100b18;
+            circle at top left,
+            #35145c 0%,
+            #170b26 40%,
+            #09060f 100%
+        );
+
+    min-height: 100vh;
 
     color: white;
-}
 
-
-/* =========================================================
-   SIDEBAR
-========================================================= */
-
-.sidebar {
-
-    width: 250px;
-
-    height: 100vh;
-
-    position: fixed;
-
-    left: 0;
-    top: 0;
-
-    background: rgba(18,12,28,.98);
-
-    border-right:
-        1px solid rgba(212,175,55,.18);
-
-    padding: 28px 18px;
-
-    z-index: 100;
-}
-
-
-.logo {
-
-    text-align: center;
-
-    font-size: 26px;
-
-    font-weight: 800;
-
-    margin-bottom: 8px;
-}
-
-
-.logo i,
-.logo span {
-
-    color: #d4af37;
-}
-
-
-.portal {
-
-    text-align: center;
-
-    color: #777;
-
-    font-size: 10px;
-
-    text-transform: uppercase;
-
-    letter-spacing: 2px;
-
-    margin-bottom: 30px;
-}
-
-
-/* THEATER BOX */
-
-.theater-box {
-
-    background:
-        rgba(212,175,55,.08);
-
-    border:
-        1px solid rgba(212,175,55,.15);
-
-    padding: 14px;
-
-    border-radius: 14px;
-
-    margin-bottom: 25px;
-}
-
-
-.theater-box .icon {
-
-    width: 40px;
-    height: 40px;
-
-    border-radius: 10px;
-
-    display: flex;
-
-    align-items: center;
-    justify-content: center;
-
-    background:
-        rgba(212,175,55,.12);
-
-    color: #d4af37;
-
-    margin-bottom: 9px;
-}
-
-
-.theater-box strong {
-
-    display: block;
-
-    font-size: 13px;
-
-    color: white;
-}
-
-
-.theater-box small {
-
-    display: block;
-
-    color: #777;
-
-    font-size: 10px;
-
-    margin-top: 3px;
-}
-
-
-/* SIDEBAR LINKS */
-
-.sidebar a {
-
-    display: flex;
-
-    align-items: center;
-
-    gap: 13px;
-
-    padding: 13px 15px;
-
-    margin-bottom: 7px;
-
-    color: #aaa;
-
-    text-decoration: none;
-
-    border-radius: 11px;
-
-    font-size: 13px;
-
-    transition: .3s;
-}
-
-
-.sidebar a i {
-
-    width: 20px;
-
-    text-align: center;
-}
-
-
-.sidebar a:hover,
-.sidebar a.active {
-
-    background:
-        rgba(212,175,55,.12);
-
-    color: #d4af37;
-}
-
-
-.logout {
-
-    position: absolute;
-
-    bottom: 25px;
-
-    left: 18px;
-    right: 18px;
-}
-
-
-/* =========================================================
-   MAIN
-========================================================= */
-
-.main {
-
-    margin-left: 250px;
-
-    padding: 35px;
 }
 
 
@@ -430,7 +314,266 @@ body {
    HEADER
 ========================================================= */
 
-.top-header {
+.header {
+
+    height: 82px;
+
+    padding:
+        0 6%;
+
+    display: flex;
+
+    align-items: center;
+
+    justify-content: space-between;
+
+    background:
+        rgba(13,7,23,.92);
+
+    border-bottom:
+        1px solid
+        rgba(255,255,255,.08);
+
+}
+
+
+.logo {
+
+    font-size: 29px;
+
+    font-weight: 800;
+
+    color: white;
+
+}
+
+
+.logo span {
+
+    color: #f4c430;
+
+}
+
+
+.back-btn {
+
+    text-decoration: none;
+
+    color: white;
+
+    padding:
+        10px 20px;
+
+    border:
+        1px solid
+        rgba(255,255,255,.15);
+
+    border-radius: 25px;
+
+    background:
+        rgba(255,255,255,.06);
+
+    transition: .25s;
+
+}
+
+
+.back-btn:hover {
+
+    background: #f4c430;
+
+    color: #180c27;
+
+}
+
+
+/* =========================================================
+   MAIN
+========================================================= */
+
+.container {
+
+    width:
+        min(1120px, 92%);
+
+    margin:
+        45px auto 80px;
+
+}
+
+
+/* =========================================================
+   PAYMENT PAGE
+========================================================= */
+
+.payment-wrapper {
+
+    display: grid;
+
+    grid-template-columns:
+        1fr 1.15fr;
+
+    gap: 25px;
+
+    align-items: start;
+
+}
+
+
+/* =========================================================
+   ORDER SUMMARY
+========================================================= */
+
+.summary-card {
+
+    background:
+        linear-gradient(
+            145deg,
+            #321452,
+            #1d0d31
+        );
+
+    border:
+        1px solid
+        #563276;
+
+    border-radius: 22px;
+
+    padding: 30px;
+
+    box-shadow:
+        0 20px 50px
+        rgba(0,0,0,.25);
+
+}
+
+
+.summary-title {
+
+    font-size: 24px;
+
+    margin-bottom: 25px;
+
+}
+
+
+.movie-title {
+
+    color: #f4c430;
+
+    font-size: 25px;
+
+    font-weight: 800;
+
+    margin-bottom: 18px;
+
+}
+
+
+.summary-info {
+
+    display: flex;
+
+    flex-direction: column;
+
+    gap: 14px;
+
+}
+
+
+.info-row {
+
+    display: flex;
+
+    justify-content: space-between;
+
+    gap: 15px;
+
+    color: #cfc6d9;
+
+    font-size: 14px;
+
+}
+
+
+.info-row strong {
+
+    color: white;
+
+    text-align: right;
+
+}
+
+
+.divider {
+
+    height: 1px;
+
+    background:
+        rgba(255,255,255,.10);
+
+    margin:
+        22px 0;
+
+}
+
+
+.seat-title {
+
+    color: #aaa1b4;
+
+    font-size: 13px;
+
+    margin-bottom: 12px;
+
+}
+
+
+.seat-list {
+
+    display: flex;
+
+    flex-wrap: wrap;
+
+    gap: 8px;
+
+}
+
+
+.seat-chip {
+
+    padding:
+        7px 12px;
+
+    border-radius: 8px;
+
+    background:
+        #f4c430;
+
+    color:
+        #21102f;
+
+    font-size: 13px;
+
+    font-weight: 800;
+
+}
+
+
+.amount-row {
+
+    display: flex;
+
+    justify-content: space-between;
+
+    margin-bottom: 12px;
+
+    color: #cfc6d9;
+
+}
+
+
+.total-row {
 
     display: flex;
 
@@ -438,531 +581,565 @@ body {
 
     align-items: center;
 
-    margin-bottom: 30px;
+    margin-top: 18px;
+
 }
 
 
-.top-header h1 {
+.total-label {
 
-    font-size: 28px;
+    font-size: 18px;
+
+    font-weight: 700;
+
 }
 
 
-.top-header h1 span {
+.total-price {
 
-    color: #d4af37;
+    color: #f4c430;
+
+    font-size: 27px;
+
+    font-weight: 800;
+
 }
 
 
-.top-header p {
+/* =========================================================
+   PAYMENT CARD
+========================================================= */
 
-    color: #888;
+.payment-card {
+
+    background:
+        #fff;
+
+    color: #29232f;
+
+    border-radius: 22px;
+
+    padding: 32px;
+
+    box-shadow:
+        0 25px 60px
+        rgba(0,0,0,.35);
+
+}
+
+
+.test-mode {
+
+    display: inline-block;
+
+    padding:
+        5px 10px;
+
+    border-radius: 6px;
+
+    background:
+        #fff1bd;
+
+    color:
+        #8a6810;
+
+    font-size: 11px;
+
+    font-weight: 800;
+
+    margin-bottom: 15px;
+
+}
+
+
+.payment-heading {
+
+    font-size: 27px;
+
+    margin-bottom: 8px;
+
+}
+
+
+.payment-subtitle {
+
+    color: #817987;
+
+    font-size: 14px;
+
+    margin-bottom: 25px;
+
+}
+
+
+/* =========================================================
+   DUMMY NOTICE
+========================================================= */
+
+.demo-notice {
+
+    padding:
+        13px 15px;
+
+    background:
+        #fff8df;
+
+    border:
+        1px solid
+        #f0d878;
+
+    border-radius: 10px;
+
+    color:
+        #705b13;
 
     font-size: 13px;
 
-    margin-top: 5px;
+    margin-bottom: 23px;
+
 }
 
 
-.user-box {
+.demo-notice strong {
+
+    display: block;
+
+    margin-bottom: 4px;
+
+}
+
+
+/* =========================================================
+   EMAIL
+========================================================= */
+
+.form-label {
+
+    display: block;
+
+    font-size: 13px;
+
+    font-weight: 700;
+
+    margin-bottom: 8px;
+
+}
+
+
+.email-input {
+
+    width: 100%;
+
+    height: 48px;
+
+    border:
+        1px solid
+        #ddd8e0;
+
+    border-radius: 9px;
+
+    padding:
+        0 14px;
+
+    font-size: 14px;
+
+    outline: none;
+
+    margin-bottom: 24px;
+
+}
+
+
+.email-input:focus {
+
+    border-color:
+        #7c3aed;
+
+    box-shadow:
+        0 0 0 3px
+        rgba(124,58,237,.10);
+
+}
+
+
+/* =========================================================
+   PAYMENT METHODS
+========================================================= */
+
+.method-title {
+
+    font-size: 16px;
+
+    font-weight: 700;
+
+    margin-bottom: 12px;
+
+}
+
+
+.payment-method {
+
+    border:
+        1px solid
+        #ded9e1;
+
+    border-radius: 10px;
+
+    overflow: hidden;
+
+    margin-bottom: 20px;
+
+}
+
+
+.method-option {
+
+    position: relative;
 
     display: flex;
 
     align-items: center;
 
-    gap: 10px;
+    gap: 13px;
+
+    min-height: 64px;
+
+    padding:
+        0 16px;
+
+    cursor: pointer;
+
+    border-bottom:
+        1px solid
+        #ebe7ed;
+
+    transition: .2s;
+
 }
 
 
-.user-icon {
+.method-option:last-child {
 
-    width: 42px;
-    height: 42px;
+    border-bottom: none;
+
+}
+
+
+.method-option:hover {
+
+    background:
+        #faf7ff;
+
+}
+
+
+.method-option input {
+
+    width: 18px;
+
+    height: 18px;
+
+    accent-color:
+        #7c3aed;
+
+}
+
+
+.method-icon {
+
+    width: 35px;
+
+    height: 35px;
+
+    display: flex;
+
+    align-items: center;
+
+    justify-content: center;
+
+    border-radius: 8px;
+
+    background:
+        #f1eaff;
+
+    font-size: 18px;
+
+}
+
+
+.method-name {
+
+    font-weight: 700;
+
+    font-size: 14px;
+
+}
+
+
+.method-small {
+
+    display: block;
+
+    color: #98919f;
+
+    font-size: 11px;
+
+    margin-top: 3px;
+
+}
+
+
+/* =========================================================
+   PAY BUTTON
+========================================================= */
+
+.pay-btn {
+
+    width: 100%;
+
+    border: none;
+
+    height: 54px;
+
+    border-radius: 10px;
+
+    background:
+        linear-gradient(
+            135deg,
+            #f4c430,
+            #e7ad10
+        );
+
+    color:
+        #21102f;
+
+    font-size: 16px;
+
+    font-weight: 800;
+
+    cursor: pointer;
+
+    transition: .25s;
+
+}
+
+
+.pay-btn:hover {
+
+    transform:
+        translateY(-2px);
+
+    box-shadow:
+        0 10px 25px
+        rgba(244,196,48,.30);
+
+}
+
+
+.pay-note {
+
+    text-align: center;
+
+    color: #99929e;
+
+    font-size: 11px;
+
+    margin-top: 14px;
+
+}
+
+
+/* =========================================================
+   SUCCESS
+========================================================= */
+
+.success-card {
+
+    max-width: 700px;
+
+    margin: 60px auto;
+
+    text-align: center;
+
+    background:
+        linear-gradient(
+            145deg,
+            #321452,
+            #1d0d31
+        );
+
+    border:
+        1px solid
+        #634085;
+
+    border-radius: 25px;
+
+    padding:
+        50px 35px;
+
+    box-shadow:
+        0 25px 70px
+        rgba(0,0,0,.35);
+
+}
+
+
+.success-icon {
+
+    width: 85px;
+
+    height: 85px;
+
+    margin:
+        0 auto 22px;
 
     border-radius: 50%;
 
     display: flex;
 
     align-items: center;
+
     justify-content: center;
 
     background:
-        linear-gradient(
-            135deg,
-            #7e3ff2,
-            #a35cff
-        );
+        #f4c430;
 
-    color: white;
+    color:
+        #241033;
+
+    font-size: 43px;
+
 }
 
 
-.user-box small {
+.success-title {
 
-    display: block;
+    font-size: 32px;
 
-    color: #777;
+    margin-bottom: 10px;
 
-    font-size: 10px;
 }
 
 
-.user-box strong {
+.success-title span {
 
-    font-size: 12px;
+    color: #f4c430;
+
 }
 
 
-/* =========================================================
-   STATISTICS
-========================================================= */
+.success-text {
 
-.stats-grid {
+    color: #c9bfd3;
 
-    display: grid;
+    margin-bottom: 28px;
 
-    grid-template-columns:
-        repeat(4, 1fr);
-
-    gap: 18px;
-
-    margin-bottom: 25px;
 }
 
 
-.stat-card {
-
-    background:
-        rgba(255,255,255,.05);
-
-    border:
-        1px solid rgba(255,255,255,.08);
-
-    border-radius: 18px;
-
-    padding: 20px;
-
-    position: relative;
-
-    overflow: hidden;
-
-    transition: .3s;
-}
-
-
-.stat-card:hover {
-
-    transform: translateY(-3px);
-
-    border-color:
-        rgba(212,175,55,.25);
-}
-
-
-.stat-icon {
-
-    width: 45px;
-    height: 45px;
-
-    border-radius: 12px;
-
-    display: flex;
-
-    align-items: center;
-    justify-content: center;
-
-    background:
-        rgba(212,175,55,.12);
-
-    color: #d4af37;
-
-    margin-bottom: 15px;
-}
-
-
-.stat-card h3 {
-
-    font-size: 23px;
-
-    margin-bottom: 3px;
-}
-
-
-.stat-card p {
-
-    color: #888;
-
-    font-size: 11px;
-}
-
-
-/* =========================================================
-   PANEL
-========================================================= */
-
-.panel {
-
-    background:
-        rgba(255,255,255,.05);
-
-    border:
-        1px solid rgba(255,255,255,.08);
-
-    border-radius: 20px;
-
-    padding: 22px;
-
-    overflow: hidden;
-}
-
-
-.panel-header {
-
-    display: flex;
-
-    justify-content: space-between;
-
-    align-items: center;
-
-    margin-bottom: 20px;
-}
-
-
-.panel-header h2 {
-
-    font-size: 19px;
-}
-
-
-.panel-header h2 span {
-
-    color: #d4af37;
-}
-
-
-/* =========================================================
-   SEARCH
-========================================================= */
-
-.search-box {
-
-    width: 280px;
-
-    position: relative;
-}
-
-
-.search-box i {
-
-    position: absolute;
-
-    left: 13px;
-
-    top: 50%;
-
-    transform:
-        translateY(-50%);
-
-    color: #777;
-}
-
-
-.search-box input {
-
-    width: 100%;
-
-    padding:
-        11px 12px 11px 38px;
+.booking-number {
 
     background:
         rgba(255,255,255,.06);
 
     border:
-        1px solid rgba(255,255,255,.1);
+        1px solid
+        rgba(255,255,255,.10);
 
-    border-radius: 9px;
+    border-radius: 13px;
 
-    outline: none;
+    padding: 18px;
 
-    color: white;
+    margin-bottom: 22px;
 
-    font-family: 'Poppins', sans-serif;
-
-    font-size: 12px;
 }
 
 
-.search-box input:focus {
-
-    border-color:
-        rgba(212,175,55,.5);
-}
-
-
-/* =========================================================
-   TABLE
-========================================================= */
-
-.table-wrapper {
-
-    width: 100%;
-
-    overflow-x: auto;
-}
-
-
-table {
-
-    width: 100%;
-
-    border-collapse: collapse;
-
-    min-width: 1000px;
-}
-
-
-thead {
-
-    background:
-        rgba(212,175,55,.08);
-}
-
-
-th {
-
-    text-align: left;
-
-    padding: 14px 12px;
-
-    color: #d4af37;
-
-    font-size: 11px;
-
-    font-weight: 600;
-
-    white-space: nowrap;
-}
-
-
-td {
-
-    padding: 14px 12px;
-
-    border-bottom:
-        1px solid rgba(255,255,255,.06);
-
-    font-size: 11px;
-
-    color: #ddd;
-
-    vertical-align: middle;
-}
-
-
-tbody tr {
-
-    transition: .2s;
-}
-
-
-tbody tr:hover {
-
-    background:
-        rgba(212,175,55,.04);
-}
-
-
-/* =========================================================
-   MOVIE
-========================================================= */
-
-.movie-cell {
-
-    display: flex;
-
-    align-items: center;
-
-    gap: 10px;
-
-    min-width: 180px;
-}
-
-
-.movie-poster {
-
-    width: 38px;
-    height: 52px;
-
-    object-fit: cover;
-
-    border-radius: 6px;
-}
-
-
-.movie-name {
-
-    font-weight: 600;
-
-    color: white;
-
-    font-size: 11px;
-}
-
-
-/* =========================================================
-   CUSTOMER
-========================================================= */
-
-.customer-name {
-
-    color: white;
-
-    font-weight: 500;
-
-    display: block;
-}
-
-
-.customer-email {
-
-    color: #777;
-
-    font-size: 9px;
+.booking-number small {
 
     display: block;
 
-    margin-top: 2px;
+    color: #9d94a7;
+
+    margin-bottom: 7px;
+
 }
 
 
-/* =========================================================
-   BADGES
-========================================================= */
+.booking-number strong {
 
-.badge {
+    color: #f4c430;
 
-    display: inline-block;
+    font-size: 23px;
 
-    padding:
-        5px 9px;
+    letter-spacing: 2px;
 
-    border-radius: 20px;
-
-    font-size: 9px;
-
-    font-weight: 600;
-
-    text-transform: capitalize;
 }
 
 
-.confirmed {
+.success-details {
+
+    display: grid;
+
+    grid-template-columns:
+        1fr 1fr;
+
+    gap: 12px;
+
+    margin-bottom: 28px;
+
+}
+
+
+.success-box {
 
     background:
-        rgba(76,175,80,.12);
+        rgba(255,255,255,.05);
 
-    color: #70df70;
+    border-radius: 10px;
 
-    border:
-        1px solid rgba(76,175,80,.2);
+    padding: 14px;
+
 }
 
 
-.pending {
+.success-box small {
 
-    background:
-        rgba(255,193,7,.12);
+    display: block;
 
-    color: #ffd45c;
-
-    border:
-        1px solid rgba(255,193,7,.2);
-}
-
-
-.cancelled {
-
-    background:
-        rgba(244,67,54,.12);
-
-    color: #ff7777;
-
-    border:
-        1px solid rgba(244,67,54,.2);
-}
-
-
-.completed {
-
-    background:
-        rgba(76,175,80,.12);
-
-    color: #70df70;
-}
-
-
-.failed {
-
-    background:
-        rgba(244,67,54,.12);
-
-    color: #ff7777;
-}
-
-
-/* =========================================================
-   REFERENCE
-========================================================= */
-
-.reference {
-
-    color: #d4af37;
-
-    font-weight: 600;
-
-    font-size: 10px;
-
-    white-space: nowrap;
-}
-
-
-/* =========================================================
-   EMPTY
-========================================================= */
-
-.empty {
-
-    text-align: center;
-
-    padding: 60px 20px;
-
-    color: #777;
-}
-
-
-.empty i {
-
-    font-size: 45px;
-
-    color: #d4af37;
-
-    margin-bottom: 15px;
-}
-
-
-.empty h3 {
-
-    color: #aaa;
+    color: #91879b;
 
     margin-bottom: 5px;
 
-    font-size: 16px;
 }
 
 
-.empty p {
+.success-box strong {
 
-    font-size: 11px;
+    font-size: 14px;
+
+}
+
+
+.home-btn {
+
+    display: inline-block;
+
+    text-decoration: none;
+
+    padding:
+        13px 27px;
+
+    border-radius: 30px;
+
+    background:
+        #f4c430;
+
+    color:
+        #241033;
+
+    font-weight: 800;
+
 }
 
 
@@ -970,91 +1147,12 @@ tbody tr:hover {
    RESPONSIVE
 ========================================================= */
 
-@media(max-width:1100px) {
-
-    .stats-grid {
-
-        grid-template-columns:
-            repeat(2, 1fr);
-    }
-
-}
-
-
 @media(max-width:800px) {
 
-    .sidebar {
+    .payment-wrapper {
 
-        width: 70px;
+        grid-template-columns: 1fr;
 
-        padding: 20px 10px;
-    }
-
-
-    .logo {
-
-        font-size: 0;
-    }
-
-
-    .logo i {
-
-        font-size: 23px;
-    }
-
-
-    .portal,
-    .theater-box,
-    .sidebar a span {
-
-        display: none;
-    }
-
-
-    .sidebar a {
-
-        justify-content: center;
-    }
-
-
-    .logout {
-
-        left: 10px;
-        right: 10px;
-    }
-
-
-    .main {
-
-        margin-left: 70px;
-
-        padding: 20px;
-    }
-
-
-    .top-header {
-
-        flex-direction: column;
-
-        align-items: flex-start;
-
-        gap: 15px;
-    }
-
-
-    .search-box {
-
-        width: 100%;
-    }
-
-
-    .panel-header {
-
-        flex-direction: column;
-
-        align-items: flex-start;
-
-        gap: 15px;
     }
 
 }
@@ -1062,15 +1160,43 @@ tbody tr:hover {
 
 @media(max-width:550px) {
 
-    .stats-grid {
+    .header {
 
-        grid-template-columns: 1fr;
+        padding: 0 4%;
+
     }
 
+    .logo {
 
-    .main {
+        font-size: 23px;
 
-        padding: 15px;
+    }
+
+    .container {
+
+        width: 94%;
+
+        margin-top: 25px;
+
+    }
+
+    .summary-card,
+    .payment-card {
+
+        padding: 22px;
+
+    }
+
+    .success-details {
+
+        grid-template-columns: 1fr;
+
+    }
+
+    .success-title {
+
+        font-size: 27px;
+
     }
 
 }
@@ -1084,913 +1210,627 @@ tbody tr:hover {
 
 
 <!-- =========================================================
-     SIDEBAR
+     HEADER
 ========================================================= -->
 
-<aside class="sidebar">
-
+<header class="header">
 
     <div class="logo">
-
-        <i class="fa-solid fa-ticket"></i>
 
         Ticket<span>Flix</span>
 
     </div>
 
 
-    <div class="portal">
+    <?php if (!$payment_success): ?>
 
-        Theater Portal
+        <a
+            href="javascript:history.back()"
+            class="back-btn"
+        >
+            ← Back
+        </a>
 
-    </div>
+    <?php endif; ?>
 
-
-    <div class="theater-box">
-
-        <div class="icon">
-
-            <i class="fa-solid fa-building"></i>
-
-        </div>
-
-
-        <strong>
-
-            <?php
-            echo htmlspecialchars($theater_name);
-            ?>
-
-        </strong>
-
-
-        <small>
-
-            <?php
-            echo htmlspecialchars($theater_location);
-            ?>
-
-        </small>
-
-    </div>
-
-
-    <a href="dashboard.php">
-
-        <i class="fa-solid fa-chart-line"></i>
-
-        <span>Dashboard</span>
-
-    </a>
-
-
-    <a href="showtimes.php">
-
-        <i class="fa-solid fa-clock"></i>
-
-        <span>Showtimes</span>
-
-    </a>
-
-
-    <a href="add_showtime.php">
-
-        <i class="fa-solid fa-circle-plus"></i>
-
-        <span>Add Showtime</span>
-
-    </a>
-
-
-    <a href="screens.php">
-
-        <i class="fa-solid fa-tv"></i>
-
-        <span>Screens</span>
-
-    </a>
-
-
-    <a href="bookings.php" class="active">
-
-        <i class="fa-solid fa-ticket"></i>
-
-        <span>Bookings</span>
-
-    </a>
-
-
-    <a href="../index.php">
-
-        <i class="fa-solid fa-globe"></i>
-
-        <span>View Website</span>
-
-    </a>
-
-
-    <a href="logout.php" class="logout">
-
-        <i class="fa-solid fa-right-from-bracket"></i>
-
-        <span>Logout</span>
-
-    </a>
-
-</aside>
+</header>
 
 
 
 <!-- =========================================================
-     MAIN
+     SUCCESS PAGE
 ========================================================= -->
 
-<main class="main">
+<?php if ($payment_success): ?>
 
 
-    <!-- HEADER -->
+<div class="container">
 
-    <div class="top-header">
+    <div class="success-card">
 
-        <div>
+        <div class="success-icon">
 
-            <h1>
-
-                Theater
-                <span>Bookings</span>
-
-            </h1>
-
-
-            <p>
-
-                View and manage bookings for your theater.
-
-            </p>
+            ✓
 
         </div>
 
 
-        <div class="user-box">
+        <h1 class="success-title">
 
-            <div class="user-icon">
+            Payment <span>Successful!</span>
 
-                <i class="fa-solid fa-user"></i>
-
-            </div>
+        </h1>
 
 
-            <div>
+        <p class="success-text">
+
+            Your TicketFlix booking has been confirmed.
+            Enjoy your movie! 🎬
+
+        </p>
+
+
+        <div class="booking-number">
+
+            <small>
+                Booking ID
+            </small>
+
+            <strong>
+                <?= htmlspecialchars($booking_number); ?>
+            </strong>
+
+        </div>
+
+
+        <div class="success-details">
+
+
+            <div class="success-box">
 
                 <small>
-                    Logged in as
+                    Movie
                 </small>
 
-
                 <strong>
-
-                    <?php
-                    echo htmlspecialchars($theater_name);
-                    ?>
-
+                    <?= htmlspecialchars(
+                        $showtime['movie_name']
+                    ); ?>
                 </strong>
 
             </div>
 
+
+            <div class="success-box">
+
+                <small>
+                    Seats
+                </small>
+
+                <strong>
+                    <?= htmlspecialchars(
+                        implode(', ', $seat_labels)
+                    ); ?>
+                </strong>
+
+            </div>
+
+
+            <div class="success-box">
+
+                <small>
+                    Date
+                </small>
+
+                <strong>
+                    <?= date(
+                        "d M Y",
+                        strtotime(
+                            $showtime['show_date']
+                        )
+                    ); ?>
+                </strong>
+
+            </div>
+
+
+            <div class="success-box">
+
+                <small>
+                    Total Paid
+                </small>
+
+                <strong>
+                    ₹<?= number_format(
+                        $total_amount,
+                        2
+                    ); ?>
+                </strong>
+
+            </div>
+
+
         </div>
+
+
+        <a
+            href="index.php"
+            class="home-btn"
+        >
+            🏠 Back to Home
+        </a>
 
     </div>
 
+</div>
 
 
-    <!-- =====================================================
-         STATISTICS
-    ====================================================== -->
-
-    <div class="stats-grid">
+<?php else: ?>
 
 
-        <div class="stat-card">
+<!-- =========================================================
+     PAYMENT PAGE
+========================================================= -->
 
-            <div class="stat-icon">
-
-                <i class="fa-solid fa-ticket"></i>
-
-            </div>
+<main class="container">
 
 
-            <h3>
-
-                <?php
-                echo $total_bookings;
-                ?>
-
-            </h3>
+    <div class="payment-wrapper">
 
 
-            <p>
-                Total Bookings
-            </p>
+        <!-- =================================================
+             LEFT SUMMARY
+        ================================================== -->
 
-        </div>
-
-
-
-        <div class="stat-card">
-
-            <div class="stat-icon">
-
-                <i class="fa-solid fa-circle-check"></i>
-
-            </div>
+        <section class="summary-card">
 
 
-            <h3>
+            <h2 class="summary-title">
 
-                <?php
-                echo $confirmed_bookings;
-                ?>
-
-            </h3>
-
-
-            <p>
-                Confirmed
-            </p>
-
-        </div>
-
-
-
-        <div class="stat-card">
-
-            <div class="stat-icon">
-
-                <i class="fa-solid fa-clock"></i>
-
-            </div>
-
-
-            <h3>
-
-                <?php
-                echo $pending_bookings;
-                ?>
-
-            </h3>
-
-
-            <p>
-                Pending
-            </p>
-
-        </div>
-
-
-
-        <div class="stat-card">
-
-            <div class="stat-icon">
-
-                <i class="fa-solid fa-indian-rupee-sign"></i>
-
-            </div>
-
-
-            <h3>
-
-                ₹<?php
-                echo number_format(
-                    $total_revenue,
-                    2
-                );
-                ?>
-
-            </h3>
-
-
-            <p>
-                Confirmed Revenue
-            </p>
-
-        </div>
-
-    </div>
-
-
-
-    <!-- =====================================================
-         BOOKINGS PANEL
-    ====================================================== -->
-
-    <div class="panel">
-
-
-        <div class="panel-header">
-
-            <h2>
-
-                Recent
-                <span>Bookings</span>
+                Booking Summary
 
             </h2>
 
 
-            <div class="search-box">
+            <div class="movie-title">
 
-                <i class="fa-solid fa-search"></i>
+                <?= htmlspecialchars(
+                    $showtime['movie_name']
+                ); ?>
+
+            </div>
+
+
+            <div class="summary-info">
+
+
+                <div class="info-row">
+
+                    <span>
+                        Theater
+                    </span>
+
+                    <strong>
+                        <?= htmlspecialchars(
+                            $showtime['theater_name']
+                        ); ?>
+                    </strong>
+
+                </div>
+
+
+                <div class="info-row">
+
+                    <span>
+                        Location
+                    </span>
+
+                    <strong>
+                        <?= htmlspecialchars(
+                            $showtime['city']
+                        ); ?>,
+                        <?= htmlspecialchars(
+                            $showtime['state']
+                        ); ?>
+                    </strong>
+
+                </div>
+
+
+                <div class="info-row">
+
+                    <span>
+                        Screen
+                    </span>
+
+                    <strong>
+                        <?= htmlspecialchars(
+                            $showtime['screen_name']
+                        ); ?>
+                    </strong>
+
+                </div>
+
+
+                <div class="info-row">
+
+                    <span>
+                        Date
+                    </span>
+
+                    <strong>
+                        <?= date(
+                            "D, d M Y",
+                            strtotime(
+                                $showtime['show_date']
+                            )
+                        ); ?>
+                    </strong>
+
+                </div>
+
+
+                <div class="info-row">
+
+                    <span>
+                        Time
+                    </span>
+
+                    <strong>
+                        <?= date(
+                            "h:i A",
+                            strtotime(
+                                $showtime['show_time']
+                            )
+                        ); ?>
+                    </strong>
+
+                </div>
+
+
+            </div>
+
+
+            <div class="divider"></div>
+
+
+            <div class="seat-title">
+
+                SELECTED SEATS
+
+            </div>
+
+
+            <div class="seat-list">
+
+                <?php foreach ($seat_labels as $seat_label): ?>
+
+                    <span class="seat-chip">
+
+                        <?= htmlspecialchars(
+                            $seat_label
+                        ); ?>
+
+                    </span>
+
+                <?php endforeach; ?>
+
+            </div>
+
+
+            <div class="divider"></div>
+
+
+            <div class="amount-row">
+
+                <span>
+                    Tickets
+                </span>
+
+                <strong>
+                    <?= $seat_count; ?>
+                    ×
+                    ₹<?= number_format(
+                        $ticket_price,
+                        2
+                    ); ?>
+                </strong>
+
+            </div>
+
+
+            <div class="amount-row">
+
+                <span>
+                    Convenience Fee
+                </span>
+
+                <strong>
+                    ₹<?= number_format(
+                        $booking_fee,
+                        2
+                    ); ?>
+                </strong>
+
+            </div>
+
+
+            <div class="total-row">
+
+                <span class="total-label">
+
+                    Total
+
+                </span>
+
+                <span class="total-price">
+
+                    ₹<?= number_format(
+                        $total_amount,
+                        2
+                    ); ?>
+
+                </span>
+
+            </div>
+
+
+        </section>
+
+
+
+        <!-- =================================================
+             RIGHT PAYMENT
+        ================================================== -->
+
+        <section class="payment-card">
+
+
+            <span class="test-mode">
+
+                DEMO MODE
+
+            </span>
+
+
+            <h1 class="payment-heading">
+
+                Complete Payment
+
+            </h1>
+
+
+            <p class="payment-subtitle">
+
+                Choose your preferred payment method
+
+            </p>
+
+
+            <div class="demo-notice">
+
+                <strong>
+                    🎭 Dummy Payment
+                </strong>
+
+                This is a demo payment page.
+                No real money will be charged.
+
+            </div>
+
+
+            <form
+                method="POST"
+                action="booking.php"
+                id="paymentForm"
+            >
+
+
+                <!-- SHOWTIME -->
 
                 <input
-                    type="text"
-                    id="bookingSearch"
-                    placeholder="Search booking..."
-                    onkeyup="searchBookings()"
+                    type="hidden"
+                    name="showtime_id"
+                    value="<?= $showtime_id; ?>"
                 >
 
-            </div>
 
-        </div>
+                <!-- SEATS -->
 
+                <?php foreach ($seat_ids as $seat_id): ?>
 
+                    <input
+                        type="hidden"
+                        name="seat_ids[]"
+                        value="<?= (int)$seat_id; ?>"
+                    >
 
-        <?php if (!empty($bookings)) { ?>
+                <?php endforeach; ?>
 
 
-            <div class="table-wrapper">
+                <!-- EMAIL -->
 
+                <label class="form-label">
 
-                <table id="bookingTable">
+                    Email
 
+                </label>
 
-                    <thead>
 
-                        <tr>
+                <input
+                    type="email"
+                    name="email"
+                    class="email-input"
+                    placeholder="email@example.com"
+                    required
+                >
 
-                            <th>
-                                Booking
-                            </th>
 
-                            <th>
-                                Customer
-                            </th>
 
-                            <th>
-                                Movie
-                            </th>
+                <!-- PAYMENT METHOD -->
 
-                            <th>
-                                Show
-                            </th>
+                <div class="method-title">
 
-                            <th>
-                                Seats
-                            </th>
+                    Payment method
 
-                            <th>
-                                Amount
-                            </th>
+                </div>
 
-                            <th>
-                                Booking Status
-                            </th>
 
-                            <th>
-                                Payment
-                            </th>
+                <div class="payment-method">
 
-                        </tr>
 
-                    </thead>
+                    <label class="method-option">
 
+                        <input
+                            type="radio"
+                            name="payment_method"
+                            value="card"
+                            required
+                        >
 
-                    <tbody>
 
+                        <div class="method-icon">
 
-                    <?php foreach ($bookings as $booking) { ?>
+                            💳
 
+                        </div>
 
-                        <?php
 
-                        /* =================================
-                           GET BOOKED SEATS
-                        ================================= */
+                        <div>
 
-                        $booking_seats = [];
+                            <span class="method-name">
 
+                                Card
 
-                        $seat_stmt = $conn->prepare("
+                            </span>
 
-                            SELECT
+                            <span class="method-small">
 
-                                s.row_number,
-                                s.seat_number,
-                                s.seat_type
+                                Visa • Mastercard • RuPay
 
-                            FROM booking_seats bs
+                            </span>
 
-                            INNER JOIN seats s
-                                ON bs.seat_id = s.id
+                        </div>
 
-                            WHERE bs.booking_id = ?
+                    </label>
 
-                            ORDER BY
-                                s.row_number,
-                                s.seat_number
 
-                        ");
 
+                    <label class="method-option">
 
-                        if ($seat_stmt) {
+                        <input
+                            type="radio"
+                            name="payment_method"
+                            value="upi"
+                        >
 
-                            $seat_stmt->bind_param(
-                                "i",
-                                $booking['booking_id']
-                            );
 
-                            $seat_stmt->execute();
+                        <div class="method-icon">
 
-                            $seat_result =
-                                $seat_stmt->get_result();
+                            📱
 
+                        </div>
 
-                            while (
-                                $seat_row =
-                                $seat_result->fetch_assoc()
-                            ) {
 
-                                $booking_seats[] =
-                                    $seat_row;
+                        <div>
 
-                            }
+                            <span class="method-name">
 
-                            $seat_stmt->close();
+                                UPI
 
-                        }
+                            </span>
 
+                            <span class="method-small">
 
-                        /* =================================
-                           POSTER
-                        ================================= */
+                                Google Pay • PhonePe • Paytm
 
-                        $poster =
-                            !empty(
-                                $booking['poster_image']
-                            )
-                            ? $booking['poster_image']
-                            : "https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?auto=format&fit=crop&w=200&q=80";
+                            </span>
 
+                        </div>
 
-                        /* =================================
-                           STATUS
-                        ================================= */
+                    </label>
 
-                        $booking_status =
-                            strtolower(
-                                trim(
-                                    $booking['booking_status']
-                                    ?? ''
-                                )
-                            );
 
 
-                        $payment_status =
-                            strtolower(
-                                trim(
-                                    $booking['payment_status']
-                                    ?? ''
-                                )
-                            );
+                    <label class="method-option">
 
-                        ?>
+                        <input
+                            type="radio"
+                            name="payment_method"
+                            value="netbanking"
+                        >
 
 
-                        <tr>
+                        <div class="method-icon">
 
+                            🏦
 
-                            <!-- BOOKING -->
+                        </div>
 
-                            <td>
 
-                                <span class="reference">
+                        <div>
 
-                                    <?php
-                                    echo htmlspecialchars(
-                                        $booking[
-                                            'booking_reference'
-                                        ]
-                                    );
-                                    ?>
+                            <span class="method-name">
 
-                                </span>
+                                Net Banking
 
+                            </span>
 
-                                <br>
+                            <span class="method-small">
 
+                                All major banks supported
 
-                                <small
-                                    style="color:#666;"
-                                >
+                            </span>
 
-                                    #<?php
-                                    echo (int)
-                                        $booking[
-                                            'booking_id'
-                                        ];
-                                    ?>
+                        </div>
 
-                                </small>
+                    </label>
 
-                            </td>
 
+                </div>
 
 
-                            <!-- CUSTOMER -->
+                <!-- DUMMY PAYMENT -->
 
-                            <td>
+                <input
+                    type="hidden"
+                    name="dummy_payment"
+                    value="1"
+                >
 
-                                <span
-                                    class="customer-name"
-                                >
 
-                                    <?php
+                <button
+                    type="submit"
+                    class="pay-btn"
+                >
 
-                                    $customer_name =
-                                        trim(
-                                            $booking[
-                                                'customer_name'
-                                            ] ?? ''
-                                        );
+                    🔒 Pay ₹<?= number_format(
+                        $total_amount,
+                        2
+                    ); ?>
 
+                </button>
 
-                                    if (
-                                        $customer_name === ''
-                                    ) {
 
-                                        $customer_name =
-                                            "Customer";
+                <div class="pay-note">
 
-                                    }
+                    🔐 Demo payment • No real transaction
 
+                </div>
 
-                                    echo htmlspecialchars(
-                                        $customer_name
-                                    );
 
-                                    ?>
+            </form>
 
-                                </span>
 
-
-                                <span
-                                    class="customer-email"
-                                >
-
-                                    <?php
-                                    echo htmlspecialchars(
-                                        $booking[
-                                            'customer_email'
-                                        ] ?? ''
-                                    );
-                                    ?>
-
-                                </span>
-
-                            </td>
-
-
-
-                            <!-- MOVIE -->
-
-                            <td>
-
-                                <div class="movie-cell">
-
-
-                                    <img
-                                        src="<?php
-                                        echo htmlspecialchars(
-                                            $poster
-                                        );
-                                        ?>"
-                                        class="movie-poster"
-                                        alt="Movie"
-                                    >
-
-
-                                    <span
-                                        class="movie-name"
-                                    >
-
-                                        <?php
-                                        echo htmlspecialchars(
-                                            $booking[
-                                                'movie_name'
-                                            ]
-                                        );
-                                        ?>
-
-                                    </span>
-
-
-                                </div>
-
-                            </td>
-
-
-
-                            <!-- SHOW -->
-
-                            <td>
-
-                                <strong>
-
-                                    <?php
-                                    echo date(
-                                        "d M Y",
-                                        strtotime(
-                                            $booking[
-                                                'show_date'
-                                            ]
-                                        )
-                                    );
-                                    ?>
-
-                                </strong>
-
-
-                                <br>
-
-
-                                <small
-                                    style="color:#888;"
-                                >
-
-                                    <?php
-                                    echo date(
-                                        "h:i A",
-                                        strtotime(
-                                            $booking[
-                                                'show_time'
-                                            ]
-                                        )
-                                    );
-                                    ?>
-
-                                </small>
-
-
-                                <br>
-
-
-                                <small
-                                    style="color:#777;"
-                                >
-
-                                    <?php
-                                    echo htmlspecialchars(
-                                        $booking[
-                                            'screen_name'
-                                        ] ?? 'Screen'
-                                    );
-                                    ?>
-
-                                </small>
-
-                            </td>
-
-
-
-                            <!-- SEATS -->
-
-                            <td>
-
-                                <?php if (
-                                    !empty($booking_seats)
-                                ) { ?>
-
-
-                                    <?php
-                                    foreach (
-                                        $booking_seats
-                                        as $seat
-                                    ) {
-                                    ?>
-
-
-                                        <span
-                                            style="
-                                                display:inline-block;
-                                                padding:4px 7px;
-                                                margin:2px;
-                                                border-radius:5px;
-                                                background:rgba(212,175,55,.1);
-                                                color:#d4af37;
-                                                font-size:9px;
-                                            "
-                                        >
-
-                                            <?php
-                                            echo htmlspecialchars(
-                                                $seat[
-                                                    'row_number'
-                                                ]
-                                            );
-                                            ?>-<?php
-                                            echo htmlspecialchars(
-                                                $seat[
-                                                    'seat_number'
-                                                ]
-                                            );
-                                            ?>
-
-                                        </span>
-
-
-                                    <?php } ?>
-
-
-                                <?php } else { ?>
-
-                                    <span
-                                        style="color:#666;"
-                                    >
-                                        No seats
-                                    </span>
-
-                                <?php } ?>
-
-                            </td>
-
-
-
-                            <!-- AMOUNT -->
-
-                            <td>
-
-                                <strong
-                                    style="
-                                        color:#d4af37;
-                                        white-space:nowrap;
-                                    "
-                                >
-
-                                    ₹<?php
-                                    echo number_format(
-                                        (float)
-                                        $booking[
-                                            'total_amount'
-                                        ],
-                                        2
-                                    );
-                                    ?>
-
-                                </strong>
-
-                            </td>
-
-
-
-                            <!-- BOOKING STATUS -->
-
-                            <td>
-
-                                <span
-                                    class="badge <?php
-                                    echo htmlspecialchars(
-                                        $booking_status
-                                    );
-                                    ?>"
-                                >
-
-                                    <?php
-                                    echo htmlspecialchars(
-                                        $booking[
-                                            'booking_status'
-                                        ]
-                                    );
-                                    ?>
-
-                                </span>
-
-                            </td>
-
-
-
-                            <!-- PAYMENT -->
-
-                            <td>
-
-                                <span
-                                    class="badge <?php
-                                    echo htmlspecialchars(
-                                        $payment_status
-                                    );
-                                    ?>"
-                                >
-
-                                    <?php
-                                    echo htmlspecialchars(
-                                        $booking[
-                                            'payment_status'
-                                        ]
-                                    );
-                                    ?>
-
-                                </span>
-
-                            </td>
-
-
-                        </tr>
-
-
-                    <?php } ?>
-
-
-                    </tbody>
-
-
-                </table>
-
-
-            </div>
-
-
-        <?php } else { ?>
-
-
-            <div class="empty">
-
-                <i class="fa-solid fa-ticket"></i>
-
-
-                <h3>
-                    No Bookings Yet
-                </h3>
-
-
-                <p>
-
-                    There are no bookings
-                    for this theater yet.
-
-                </p>
-
-            </div>
-
-
-        <?php } ?>
+        </section>
 
 
     </div>
 
-
 </main>
 
 
-
-<script>
-
-/* =========================================================
-   SEARCH BOOKINGS
-========================================================= */
-
-function searchBookings() {
-
-    const input =
-        document
-        .getElementById("bookingSearch")
-        .value
-        .toLowerCase();
-
-
-    const rows =
-        document.querySelectorAll(
-            "#bookingTable tbody tr"
-        );
-
-
-    rows.forEach(function(row) {
-
-        const text =
-            row.textContent.toLowerCase();
-
-
-        if (text.includes(input)) {
-
-            row.style.display = "";
-
-        } else {
-
-            row.style.display = "none";
-
-        }
-
-    });
-
-}
-
-</script>
+<?php endif; ?>
 
 
 </body>

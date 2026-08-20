@@ -1,7 +1,9 @@
 <?php
 
 session_start();
+
 require_once "../config.php";
+
 
 /* =========================================================
    THEATER LOGIN CHECK
@@ -45,6 +47,7 @@ if ($result->num_rows > 0) {
 
 $stmt->close();
 
+
 if (!$theater) {
 
     session_destroy();
@@ -53,6 +56,7 @@ if (!$theater) {
 
     exit();
 }
+
 
 $theater_name =
     $theater['name'] ?? "My Theater";
@@ -68,6 +72,12 @@ $theater_location =
 
 $error = "";
 $success = "";
+
+$movie_id = 0;
+$screen_id = 0;
+$show_date = "";
+$show_time = "";
+$price = "";
 
 
 /* =========================================================
@@ -89,6 +99,7 @@ $result = $stmt->get_result();
 while ($row = $result->fetch_assoc()) {
 
     $movies[] = $row;
+
 }
 
 $stmt->close();
@@ -107,7 +118,11 @@ $stmt = $conn->prepare("
     ORDER BY id ASC
 ");
 
-$stmt->bind_param("i", $theater_id);
+$stmt->bind_param(
+    "i",
+    $theater_id
+);
+
 $stmt->execute();
 
 $result = $stmt->get_result();
@@ -115,6 +130,7 @@ $result = $stmt->get_result();
 while ($row = $result->fetch_assoc()) {
 
     $screens[] = $row;
+
 }
 
 $stmt->close();
@@ -126,13 +142,25 @@ $stmt->close();
 
 if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
-    $movie_id = (int) ($_POST['movie_id'] ?? 0);
 
-    $screen_id = (int) ($_POST['screen_id'] ?? 0);
+    $movie_id =
+        (int) ($_POST['movie_id'] ?? 0);
 
-    $show_date = trim($_POST['show_date'] ?? '');
 
-    $show_time = trim($_POST['show_time'] ?? '');
+    $screen_id =
+        (int) ($_POST['screen_id'] ?? 0);
+
+
+    $show_date =
+        trim($_POST['show_date'] ?? '');
+
+
+    $show_time =
+        trim($_POST['show_time'] ?? '');
+
+
+    $price =
+        trim($_POST['price'] ?? '');
 
 
     /* -----------------------------------------------------
@@ -143,19 +171,36 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
         $movie_id <= 0 ||
         $screen_id <= 0 ||
         $show_date === "" ||
-        $show_time === ""
+        $show_time === "" ||
+        $price === ""
     ) {
 
-        $error = "Please fill all the fields.";
+        $error =
+            "Please fill all the fields.";
+
+    } elseif (
+        !is_numeric($price) ||
+        (float)$price < 0
+    ) {
+
+        $error =
+            "Please enter a valid ticket price.";
 
     } else {
+
+
+        $ticket_price =
+            (float)$price;
+
 
         /* -------------------------------------------------
            CHECK SCREEN BELONGS TO LOGGED-IN THEATER
         ------------------------------------------------- */
 
         $stmt = $conn->prepare("
-            SELECT id
+            SELECT
+                id,
+                total_seats
             FROM screens
             WHERE id = ?
             AND theater_id = ?
@@ -170,142 +215,226 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
         $stmt->execute();
 
-        $result = $stmt->get_result();
+        $result =
+            $stmt->get_result();
 
-        $screen_exists = $result->num_rows === 1;
+        $screen_data =
+            $result->fetch_assoc();
 
         $stmt->close();
 
 
-        if (!$screen_exists) {
+        if (!$screen_data) {
 
             $error =
                 "Invalid screen selected for this theater.";
 
         } else {
 
-            /* ---------------------------------------------
-               CHECK MOVIE EXISTS
-            --------------------------------------------- */
 
-            $stmt = $conn->prepare("
-                SELECT id
-                FROM movies
-                WHERE id = ?
-                LIMIT 1
-            ");
+            /*
+            |-------------------------------------------------
+            | GET SCREEN TOTAL SEATS
+            |-------------------------------------------------
+            */
 
-            $stmt->bind_param(
-                "i",
-                $movie_id
-            );
-
-            $stmt->execute();
-
-            $result = $stmt->get_result();
-
-            $movie_exists = $result->num_rows === 1;
-
-            $stmt->close();
+            $total_seats =
+                (int)($screen_data['total_seats'] ?? 0);
 
 
-            if (!$movie_exists) {
+            if ($total_seats <= 0) {
 
-                $error = "Invalid movie selected.";
+                $error =
+                    "Selected screen has no seats configured.";
 
             } else {
 
-                /* -----------------------------------------
-                   CHECK DUPLICATE SHOWTIME
-                ----------------------------------------- */
+
+                /* ---------------------------------------------
+                   CHECK MOVIE EXISTS
+                --------------------------------------------- */
 
                 $stmt = $conn->prepare("
                     SELECT id
-                    FROM showtimes
-                    WHERE screen_id = ?
-                    AND show_date = ?
-                    AND show_time = ?
+                    FROM movies
+                    WHERE id = ?
                     LIMIT 1
                 ");
 
                 $stmt->bind_param(
-                    "iss",
-                    $screen_id,
-                    $show_date,
-                    $show_time
+                    "i",
+                    $movie_id
                 );
 
                 $stmt->execute();
 
-                $result = $stmt->get_result();
+                $result =
+                    $stmt->get_result();
 
-                $duplicate =
-                    $result->num_rows > 0;
+                $movie_exists =
+                    $result->num_rows === 1;
 
                 $stmt->close();
 
 
-                if ($duplicate) {
+                if (!$movie_exists) {
 
                     $error =
-                        "A showtime already exists for this screen at the selected date and time.";
+                        "Invalid movie selected.";
 
                 } else {
 
-                    /* -------------------------------------
-                       INSERT SHOWTIME
-                    ------------------------------------- */
+
+                    /* -----------------------------------------
+                       CHECK DUPLICATE SHOWTIME
+                    ----------------------------------------- */
 
                     $stmt = $conn->prepare("
-                        INSERT INTO showtimes
-                        (
-                            movie_id,
-                            screen_id,
-                            show_date,
-                            show_time
-                        )
-                        VALUES (?, ?, ?, ?)
+                        SELECT id
+                        FROM showtimes
+                        WHERE screen_id = ?
+                        AND show_date = ?
+                        AND show_time = ?
+                        LIMIT 1
                     ");
 
                     $stmt->bind_param(
-                        "iiss",
-                        $movie_id,
+                        "iss",
                         $screen_id,
                         $show_date,
                         $show_time
                     );
 
+                    $stmt->execute();
 
-                    if ($stmt->execute()) {
+                    $result =
+                        $stmt->get_result();
 
-                        $success =
-                            "Showtime added successfully!";
+                    $duplicate =
+                        $result->num_rows > 0;
 
-                        /*
-                         * Clear selected values
-                         */
+                    $stmt->close();
 
-                        $movie_id = 0;
-                        $screen_id = 0;
-                        $show_date = "";
-                        $show_time = "";
+
+                    if ($duplicate) {
+
+                        $error =
+                            "A showtime already exists for this screen at the selected date and time.";
 
                     } else {
 
-                        $error =
-                            "Unable to add showtime. Please try again.";
+
+                        /* -------------------------------------
+                           INSERT SHOWTIME
+                        ------------------------------------- */
+
+                        $stmt = $conn->prepare("
+                            INSERT INTO showtimes
+                            (
+                                movie_id,
+                                screen_id,
+                                show_date,
+                                show_time,
+                                price,
+                                available_seats
+                            )
+                            VALUES
+                            (
+                                ?,
+                                ?,
+                                ?,
+                                ?,
+                                ?,
+                                ?
+                            )
+                        ");
+
+
+                        if (!$stmt) {
+
+                            $error =
+                                "Database error: "
+                                . $conn->error;
+
+                        } else {
+
+
+                            /*
+                            |-------------------------------------------------
+                            | IMPORTANT
+                            |-------------------------------------------------
+                            |
+                            | price           = entered ticket price
+                            | available_seats = screen total seats
+                            |
+                            */
+
+                            $stmt->bind_param(
+                                "iissdi",
+                                $movie_id,
+                                $screen_id,
+                                $show_date,
+                                $show_time,
+                                $ticket_price,
+                                $total_seats
+                            );
+
+
+                            if ($stmt->execute()) {
+
+                                $success =
+                                    "Showtime added successfully! "
+                                    . "Price: ₹"
+                                    . number_format(
+                                        $ticket_price,
+                                        2
+                                    )
+                                    . " | Available Seats: "
+                                    . $total_seats;
+
+
+                                /*
+                                |---------------------------------------------
+                                | CLEAR FORM
+                                |---------------------------------------------
+                                */
+
+                                $movie_id = 0;
+                                $screen_id = 0;
+                                $show_date = "";
+                                $show_time = "";
+                                $price = "";
+
+                            } else {
+
+                                $error =
+                                    "Unable to add showtime. "
+                                    . $stmt->error;
+
+                            }
+
+
+                            $stmt->close();
+
+                        }
+
                     }
 
-                    $stmt->close();
                 }
+
             }
+
         }
+
     }
+
 }
 
 ?>
 
+
 <!DOCTYPE html>
+
 <html lang="en">
 
 <head>
@@ -321,15 +450,18 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
     Add Showtime | TicketFlix
 </title>
 
+
 <link
     href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&display=swap"
     rel="stylesheet"
 >
 
+
 <link
     rel="stylesheet"
     href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css"
 >
+
 
 <style>
 
@@ -343,11 +475,14 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
     box-sizing: border-box;
 }
 
+
 body {
 
     min-height: 100vh;
 
-    font-family: 'Poppins', sans-serif;
+    font-family:
+        'Poppins',
+        sans-serif;
 
     background:
         radial-gradient(
@@ -376,15 +511,19 @@ body {
     left: 0;
     top: 0;
 
-    background: rgba(18,12,28,.98);
+    background:
+        rgba(18,12,28,.98);
 
     border-right:
-        1px solid rgba(212,175,55,.18);
+        1px solid
+        rgba(212,175,55,.18);
 
-    padding: 28px 18px;
+    padding:
+        28px 18px;
 
     z-index: 100;
 }
+
 
 .logo {
 
@@ -397,11 +536,13 @@ body {
     margin-bottom: 8px;
 }
 
+
 .logo i,
 .logo span {
 
     color: #d4af37;
 }
+
 
 .portal {
 
@@ -427,7 +568,8 @@ body {
         rgba(212,175,55,.08);
 
     border:
-        1px solid rgba(212,175,55,.15);
+        1px solid
+        rgba(212,175,55,.15);
 
     padding: 14px;
 
@@ -435,6 +577,7 @@ body {
 
     margin-bottom: 25px;
 }
+
 
 .theater-box .icon {
 
@@ -456,12 +599,14 @@ body {
     margin-bottom: 9px;
 }
 
+
 .theater-box strong {
 
     display: block;
 
     font-size: 13px;
 }
+
 
 .theater-box small {
 
@@ -500,12 +645,14 @@ body {
     transition: .3s;
 }
 
+
 .sidebar a i {
 
     width: 20px;
 
     text-align: center;
 }
+
 
 .sidebar a:hover,
 .sidebar a.active {
@@ -515,6 +662,7 @@ body {
 
     color: #d4af37;
 }
+
 
 .logout {
 
@@ -556,15 +704,18 @@ body {
     margin-bottom: 30px;
 }
 
+
 .top-header h1 {
 
     font-size: 28px;
 }
 
+
 .top-header h1 span {
 
     color: #d4af37;
 }
+
 
 .top-header p {
 
@@ -575,6 +726,7 @@ body {
     margin-top: 5px;
 }
 
+
 .user-box {
 
     display: flex;
@@ -583,6 +735,7 @@ body {
 
     gap: 10px;
 }
+
 
 .user-icon {
 
@@ -604,6 +757,7 @@ body {
         );
 }
 
+
 .user-box small {
 
     display: block;
@@ -612,6 +766,7 @@ body {
 
     font-size: 10px;
 }
+
 
 .user-box strong {
 
@@ -630,20 +785,23 @@ body {
     margin: 0 auto;
 }
 
+
 .form-card {
 
     background:
         rgba(255,255,255,.05);
 
     border:
-        1px solid rgba(255,255,255,.08);
+        1px solid
+        rgba(255,255,255,.08);
 
     border-radius: 22px;
 
     padding: 30px;
 
     box-shadow:
-        0 20px 50px rgba(0,0,0,.25);
+        0 20px 50px
+        rgba(0,0,0,.25);
 }
 
 
@@ -664,8 +822,10 @@ body {
     margin-bottom: 25px;
 
     border-bottom:
-        1px solid rgba(255,255,255,.08);
+        1px solid
+        rgba(255,255,255,.08);
 }
+
 
 .form-header-icon {
 
@@ -687,10 +847,12 @@ body {
     font-size: 23px;
 }
 
+
 .form-header h2 {
 
     font-size: 20px;
 }
+
 
 .form-header p {
 
@@ -723,16 +885,19 @@ body {
     gap: 10px;
 }
 
+
 .alert-error {
 
     background:
         rgba(231,76,60,.12);
 
     border:
-        1px solid rgba(231,76,60,.25);
+        1px solid
+        rgba(231,76,60,.25);
 
     color: #ff8175;
 }
+
 
 .alert-success {
 
@@ -740,7 +905,8 @@ body {
         rgba(46,204,113,.12);
 
     border:
-        1px solid rgba(46,204,113,.25);
+        1px solid
+        rgba(46,204,113,.25);
 
     color: #6ee7a0;
 }
@@ -760,15 +926,18 @@ body {
     gap: 20px;
 }
 
+
 .form-group {
 
     margin-bottom: 5px;
 }
 
+
 .form-group.full {
 
     grid-column: 1 / -1;
 }
+
 
 .form-group label {
 
@@ -781,10 +950,12 @@ body {
     margin-bottom: 8px;
 }
 
+
 .input-box {
 
     position: relative;
 }
+
 
 .input-box i {
 
@@ -794,24 +965,31 @@ body {
 
     top: 50%;
 
-    transform: translateY(-50%);
+    transform:
+        translateY(-50%);
 
     color: #d4af37;
 
     pointer-events: none;
 }
 
+
 .input-box input,
 .input-box select {
 
     width: 100%;
 
-    padding: 14px 15px 14px 43px;
+    padding:
+        14px
+        15px
+        14px
+        43px;
 
     border-radius: 11px;
 
     border:
-        1px solid rgba(255,255,255,.10);
+        1px solid
+        rgba(255,255,255,.10);
 
     background:
         rgba(0,0,0,.28);
@@ -825,12 +1003,14 @@ body {
     font-size: 12px;
 }
 
+
 .input-box select {
 
     cursor: pointer;
 
     appearance: auto;
 }
+
 
 .input-box select option {
 
@@ -839,13 +1019,29 @@ body {
     color: white;
 }
 
+
 .input-box input:focus,
 .input-box select:focus {
 
     border-color: #d4af37;
 
     box-shadow:
-        0 0 0 3px rgba(212,175,55,.07);
+        0 0 0 3px
+        rgba(212,175,55,.07);
+}
+
+
+/* =========================================================
+   PRICE NOTE
+========================================================= */
+
+.price-note {
+
+    margin-top: 6px;
+
+    color: #777;
+
+    font-size: 10px;
 }
 
 
@@ -865,8 +1061,10 @@ body {
         rgba(126,87,194,.08);
 
     border:
-        1px solid rgba(126,87,194,.15);
+        1px solid
+        rgba(126,87,194,.15);
 }
+
 
 .theater-info-title {
 
@@ -877,12 +1075,14 @@ body {
     margin-bottom: 7px;
 }
 
+
 .theater-info p {
 
     color: #aaa;
 
     font-size: 11px;
 }
+
 
 .theater-info strong {
 
@@ -902,6 +1102,7 @@ body {
 
     margin-top: 25px;
 }
+
 
 .btn {
 
@@ -932,6 +1133,7 @@ body {
     transition: .3s;
 }
 
+
 .btn-primary {
 
     flex: 1;
@@ -946,13 +1148,17 @@ body {
     color: #171020;
 }
 
+
 .btn-primary:hover {
 
-    transform: translateY(-2px);
+    transform:
+        translateY(-2px);
 
     box-shadow:
-        0 8px 20px rgba(212,175,55,.20);
+        0 8px 20px
+        rgba(212,175,55,.20);
 }
+
 
 .btn-secondary {
 
@@ -962,8 +1168,10 @@ body {
     color: #aaa;
 
     border:
-        1px solid rgba(255,255,255,.08);
+        1px solid
+        rgba(255,255,255,.08);
 }
+
 
 .btn-secondary:hover {
 
@@ -990,12 +1198,14 @@ body {
         rgba(231,76,60,.07);
 
     border:
-        1px solid rgba(231,76,60,.15);
+        1px solid
+        rgba(231,76,60,.15);
 
     color: #aaa;
 
     font-size: 12px;
 }
+
 
 .no-data i {
 
@@ -1017,18 +1227,22 @@ body {
 
         width: 70px;
 
-        padding: 20px 10px;
+        padding:
+            20px 10px;
     }
+
 
     .logo {
 
         font-size: 0;
     }
 
+
     .logo i {
 
         font-size: 23px;
     }
+
 
     .portal,
     .theater-box,
@@ -1037,16 +1251,19 @@ body {
         display: none;
     }
 
+
     .sidebar a {
 
         justify-content: center;
     }
+
 
     .logout {
 
         left: 10px;
         right: 10px;
     }
+
 
     .main {
 
@@ -1055,16 +1272,20 @@ body {
         padding: 20px;
     }
 
+
     .form-grid {
 
         grid-template-columns: 1fr;
     }
 
+
     .form-group.full {
 
         grid-column: auto;
     }
+
 }
+
 
 @media(max-width:550px) {
 
@@ -1077,20 +1298,24 @@ body {
         gap: 15px;
     }
 
+
     .form-card {
 
         padding: 20px;
     }
+
 
     .button-row {
 
         flex-direction: column;
     }
 
+
     .btn {
 
         width: 100%;
     }
+
 }
 
 </style>
@@ -1107,6 +1332,7 @@ body {
 
 <aside class="sidebar">
 
+
     <div class="logo">
 
         <i class="fa-solid fa-ticket"></i>
@@ -1114,6 +1340,7 @@ body {
         Ticket<span>Flix</span>
 
     </div>
+
 
     <div class="portal">
 
@@ -1130,18 +1357,24 @@ body {
 
         </div>
 
+
         <strong>
 
             <?php
-            echo htmlspecialchars($theater_name);
+            echo htmlspecialchars(
+                $theater_name
+            );
             ?>
 
         </strong>
 
+
         <small>
 
             <?php
-            echo htmlspecialchars($theater_location);
+            echo htmlspecialchars(
+                $theater_location
+            );
             ?>
 
         </small>
@@ -1167,7 +1400,10 @@ body {
     </a>
 
 
-    <a href="add_showtime.php" class="active">
+    <a
+        href="add_showtime.php"
+        class="active"
+    >
 
         <i class="fa-solid fa-circle-plus"></i>
 
@@ -1203,7 +1439,10 @@ body {
     </a>
 
 
-    <a href="logout.php" class="logout">
+    <a
+        href="logout.php"
+        class="logout"
+    >
 
         <i class="fa-solid fa-right-from-bracket"></i>
 
@@ -1233,6 +1472,7 @@ body {
 
             </h1>
 
+
             <p>
 
                 Create a new movie show for your theater.
@@ -1250,14 +1490,20 @@ body {
 
             </div>
 
+
             <div>
 
-                <small>Logged in as</small>
+                <small>
+                    Logged in as
+                </small>
+
 
                 <strong>
 
                     <?php
-                    echo htmlspecialchars($theater_name);
+                    echo htmlspecialchars(
+                        $theater_name
+                    );
                     ?>
 
                 </strong>
@@ -1269,11 +1515,10 @@ body {
     </div>
 
 
-    <!-- =====================================================
-         FORM
-    ====================================================== -->
+    <!-- FORM -->
 
     <div class="form-wrapper">
+
 
         <div class="form-card">
 
@@ -1288,6 +1533,7 @@ body {
 
                 </div>
 
+
                 <div>
 
                     <h2>
@@ -1296,9 +1542,10 @@ body {
 
                     </h2>
 
+
                     <p>
 
-                        Select movie, screen, date and time.
+                        Select movie, screen, date, time and ticket price.
 
                     </p>
 
@@ -1318,7 +1565,9 @@ body {
                     <span>
 
                         <?php
-                        echo htmlspecialchars($error);
+                        echo htmlspecialchars(
+                            $error
+                        );
                         ?>
 
                     </span>
@@ -1339,7 +1588,9 @@ body {
                     <span>
 
                         <?php
-                        echo htmlspecialchars($success);
+                        echo htmlspecialchars(
+                            $success
+                        );
                         ?>
 
                     </span>
@@ -1404,9 +1655,11 @@ body {
 
                             </label>
 
+
                             <div class="input-box">
 
                                 <i class="fa-solid fa-film"></i>
+
 
                                 <select
                                     name="movie_id"
@@ -1420,12 +1673,23 @@ body {
                                     </option>
 
 
-                                    <?php foreach ($movies as $movie) { ?>
+                                    <?php foreach (
+                                        $movies as $movie
+                                    ) { ?>
+
 
                                         <option
                                             value="<?php
                                             echo (int)$movie['id'];
                                             ?>"
+                                            <?php
+                                            echo (
+                                                (int)$movie_id ===
+                                                (int)$movie['id']
+                                            )
+                                            ? 'selected'
+                                            : '';
+                                            ?>
                                         >
 
                                             <?php
@@ -1436,7 +1700,9 @@ body {
 
                                         </option>
 
+
                                     <?php } ?>
+
 
                                 </select>
 
@@ -1455,9 +1721,11 @@ body {
 
                             </label>
 
+
                             <div class="input-box">
 
                                 <i class="fa-solid fa-tv"></i>
+
 
                                 <select
                                     name="screen_id"
@@ -1471,21 +1739,36 @@ body {
                                     </option>
 
 
-                                    <?php foreach ($screens as $index => $screen) { ?>
+                                    <?php foreach (
+                                        $screens as $index => $screen
+                                    ) { ?>
+
 
                                         <?php
 
-                                        if (!empty($screen['name'])) {
-
-                                            $screen_display =
-                                                $screen['name'];
-
-                                        } elseif (!empty($screen['screen_name'])) {
+                                        if (
+                                            !empty(
+                                                $screen['screen_name']
+                                            )
+                                        ) {
 
                                             $screen_display =
                                                 $screen['screen_name'];
 
-                                        } elseif (!empty($screen['screen_number'])) {
+                                        } elseif (
+                                            !empty(
+                                                $screen['name']
+                                            )
+                                        ) {
+
+                                            $screen_display =
+                                                $screen['name'];
+
+                                        } elseif (
+                                            !empty(
+                                                $screen['screen_number']
+                                            )
+                                        ) {
 
                                             $screen_display =
                                                 "Screen "
@@ -1496,6 +1779,7 @@ body {
                                             $screen_display =
                                                 "Screen "
                                                 . ($index + 1);
+
                                         }
 
                                         ?>
@@ -1505,6 +1789,14 @@ body {
                                             value="<?php
                                             echo (int)$screen['id'];
                                             ?>"
+                                            <?php
+                                            echo (
+                                                (int)$screen_id ===
+                                                (int)$screen['id']
+                                            )
+                                            ? 'selected'
+                                            : '';
+                                            ?>
                                         >
 
                                             <?php
@@ -1513,9 +1805,23 @@ body {
                                             );
                                             ?>
 
+                                            <?php
+                                            if (
+                                                isset(
+                                                    $screen['total_seats']
+                                                )
+                                            ) {
+                                                echo " ("
+                                                    . (int)$screen['total_seats']
+                                                    . " seats)";
+                                            }
+                                            ?>
+
                                         </option>
 
+
                                     <?php } ?>
+
 
                                 </select>
 
@@ -1534,9 +1840,11 @@ body {
 
                             </label>
 
+
                             <div class="input-box">
 
                                 <i class="fa-solid fa-calendar"></i>
+
 
                                 <input
                                     type="date"
@@ -1546,7 +1854,7 @@ body {
                                     ?>"
                                     value="<?php
                                     echo htmlspecialchars(
-                                        $show_date ?? ''
+                                        $show_date
                                     );
                                     ?>"
                                     required
@@ -1567,20 +1875,64 @@ body {
 
                             </label>
 
+
                             <div class="input-box">
 
                                 <i class="fa-solid fa-clock"></i>
+
 
                                 <input
                                     type="time"
                                     name="show_time"
                                     value="<?php
                                     echo htmlspecialchars(
-                                        $show_time ?? ''
+                                        $show_time
                                     );
                                     ?>"
                                     required
                                 >
+
+                            </div>
+
+                        </div>
+
+
+                        <!-- PRICE -->
+
+                        <div class="form-group full">
+
+                            <label>
+
+                                Ticket Price
+
+                            </label>
+
+
+                            <div class="input-box">
+
+                                <i class="fa-solid fa-indian-rupee-sign"></i>
+
+
+                                <input
+                                    type="number"
+                                    name="price"
+                                    min="0"
+                                    step="0.01"
+                                    placeholder="Enter ticket price"
+                                    value="<?php
+                                    echo htmlspecialchars(
+                                        $price
+                                    );
+                                    ?>"
+                                    required
+                                >
+
+                            </div>
+
+
+                            <div class="price-note">
+
+                                Enter the ticket price for this showtime.
 
                             </div>
 
@@ -1601,6 +1953,7 @@ body {
                             THEATER
 
                         </div>
+
 
                         <p>
 
@@ -1633,6 +1986,7 @@ body {
 
                     <div class="button-row">
 
+
                         <a
                             href="showtimes.php"
                             class="btn btn-secondary"
@@ -1655,6 +2009,7 @@ body {
                             Add Showtime
 
                         </button>
+
 
                     </div>
 
