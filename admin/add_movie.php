@@ -13,64 +13,12 @@ if (!isset($_SESSION['admin_id'])) {
     exit();
 }
 
-
-/* =====================================================
-   GET MOVIE ID
-===================================================== */
-
-if (!isset($_GET['id']) || !is_numeric($_GET['id'])) {
-    header("Location: manage_movies.php");
-    exit();
-}
-
-$movie_id = (int) $_GET['id'];
-
 $message = "";
 $error = "";
 
 
 /* =====================================================
-   FETCH MOVIE
-===================================================== */
-
-$stmt = $conn->prepare("
-    SELECT
-        id,
-        name,
-        description,
-        genre,
-        language,
-        duration,
-        rating,
-        release_date,
-        poster_image,
-        trailer,
-        status
-    FROM movies
-    WHERE id = ?
-    LIMIT 1
-");
-
-$stmt->bind_param("i", $movie_id);
-$stmt->execute();
-
-$result = $stmt->get_result();
-$movie = $result->fetch_assoc();
-
-$stmt->close();
-
-
-/* =====================================================
-   MOVIE NOT FOUND
-===================================================== */
-
-if (!$movie) {
-    die("Movie not found.");
-}
-
-
-/* =====================================================
-   UPDATE MOVIE
+   ADD MOVIE
 ===================================================== */
 
 if ($_SERVER["REQUEST_METHOD"] === "POST") {
@@ -79,21 +27,15 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
     $description = trim($_POST['description'] ?? "");
     $genre = trim($_POST['genre'] ?? "");
     $language = trim($_POST['language'] ?? "");
-    $duration = (int) ($_POST['duration'] ?? 0);
+    $duration = (int)($_POST['duration'] ?? 0);
     $rating = trim($_POST['rating'] ?? "");
-
     $release_date = !empty($_POST['release_date'])
         ? $_POST['release_date']
         : null;
-
     $trailer = trim($_POST['trailer'] ?? "");
-
     $status = $_POST['status'] ?? "coming_soon";
 
-
-    /* Keep old poster if no new file selected */
-
-    $poster_image = $movie['poster_image'] ?? "";
+    $poster_image = "";
 
 
     /* =================================================
@@ -115,144 +57,126 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
         !in_array(
             $status,
             [
-                'coming_soon',
-                'now_showing',
-                'expired'
+                "coming_soon",
+                "now_showing",
+                "expired"
             ]
         )
     ) {
 
         $error = "Invalid movie status.";
 
-    } else {
+    }
 
 
-        /* =================================================
-           POSTER FILE UPLOAD
-        ================================================= */
+    /* =================================================
+       POSTER UPLOAD
+    ================================================= */
+
+    if (empty($error)) {
 
         if (
-            isset($_FILES['poster_image']) &&
-            $_FILES['poster_image']['error'] !== UPLOAD_ERR_NO_FILE
+            !isset($_FILES['poster_image']) ||
+            $_FILES['poster_image']['error'] === UPLOAD_ERR_NO_FILE
         ) {
 
-            /* ---------------------------------------------
-               CHECK UPLOAD ERROR
-            --------------------------------------------- */
+            $error = "Please select a movie poster.";
 
-            if (
-                $_FILES['poster_image']['error']
-                !== UPLOAD_ERR_OK
-            ) {
+        } elseif ($_FILES['poster_image']['error'] !== UPLOAD_ERR_OK) {
+
+            $error = "There was an error uploading the poster.";
+
+        } elseif ($_FILES['poster_image']['size'] > 5 * 1024 * 1024) {
+
+            $error = "Poster image must be less than 5MB.";
+
+        } else {
+
+            /* -----------------------------------------
+               ALLOWED TYPES
+            ----------------------------------------- */
+
+            $allowed_types = [
+                "image/jpeg",
+                "image/png",
+                "image/webp"
+            ];
+
+            $file_type = mime_content_type(
+                $_FILES['poster_image']['tmp_name']
+            );
+
+
+            if (!in_array($file_type, $allowed_types)) {
 
                 $error =
-                    "There was an error uploading the poster.";
+                    "Only JPG, JPEG, PNG and WEBP images are allowed.";
 
-            }
-
-
-            /* ---------------------------------------------
-               CHECK FILE SIZE
-            --------------------------------------------- */
-
-            elseif (
-                $_FILES['poster_image']['size']
-                > 5 * 1024 * 1024
-            ) {
-
-                $error =
-                    "Poster image must be less than 5MB.";
-
-            }
-
-
-            else {
+            } else {
 
                 /* -----------------------------------------
-                   ALLOWED IMAGE TYPES
+                   EXTENSION
                 ----------------------------------------- */
 
-                $allowed_types = [
-                    'image/jpeg',
-                    'image/png',
-                    'image/webp'
-                ];
-
-
-                /* Detect actual MIME type */
-
-                $file_type = mime_content_type(
-                    $_FILES['poster_image']['tmp_name']
+                $extension = strtolower(
+                    pathinfo(
+                        $_FILES['poster_image']['name'],
+                        PATHINFO_EXTENSION
+                    )
                 );
 
 
-                if (!in_array($file_type, $allowed_types)) {
+                /* -----------------------------------------
+                   CREATE UNIQUE FILE NAME
+                ----------------------------------------- */
 
-                    $error =
-                        "Only JPG, JPEG, PNG and WEBP images are allowed.";
+                $new_file_name =
+                    "movie_" .
+                    time() .
+                    "_" .
+                    uniqid() .
+                    "." .
+                    $extension;
 
+
+                /* -----------------------------------------
+                   UPLOAD FOLDER
+
+                   Project:
+                   ticket flix/
+                       uploads/
+                           posters/
+                ----------------------------------------- */
+
+                $upload_directory =
+                    __DIR__ .
+                    "/../uploads/posters/";
+
+
+                /* -----------------------------------------
+                   CREATE FOLDER
+                ----------------------------------------- */
+
+                if (!is_dir($upload_directory)) {
+
+                    if (!mkdir($upload_directory, 0777, true)) {
+
+                        $error =
+                            "Unable to create uploads/posters folder.";
+                    }
                 }
 
-                else {
 
-                    /* -------------------------------------
-                       GET FILE EXTENSION
-                    ------------------------------------- */
+                /* -----------------------------------------
+                   MOVE FILE
+                ----------------------------------------- */
 
-                    $extension = strtolower(
-                        pathinfo(
-                            $_FILES['poster_image']['name'],
-                            PATHINFO_EXTENSION
-                        )
-                    );
-
-
-                    /* -------------------------------------
-                       CREATE UNIQUE FILE NAME
-                    ------------------------------------- */
-
-                    $new_file_name =
-                        "movie_" .
-                        $movie_id .
-                        "_" .
-                        time() .
-                        "." .
-                        $extension;
-
-
-                    /* -------------------------------------
-                       UPLOAD DIRECTORY
-                    ------------------------------------- */
-
-                    $upload_directory =
-                        __DIR__ .
-                        "/../uploads/posters/";
-
-
-                    /* Create folder if not exists */
-
-                    if (!is_dir($upload_directory)) {
-
-                        mkdir(
-                            $upload_directory,
-                            0777,
-                            true
-                        );
-                    }
-
-
-                    /* -------------------------------------
-                       COMPLETE FILE PATH
-                    ------------------------------------- */
+                if (empty($error)) {
 
                     $upload_path =
                         $upload_directory .
                         $new_file_name;
 
-
-                    /* -------------------------------------
-                       MOVE FILE
-                    ------------------------------------- */
 
                     if (
                         move_uploaded_file(
@@ -262,40 +186,15 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
                     ) {
 
                         /*
-                         * Delete old poster
-                         * only if it is our local upload
+                         * IMPORTANT
+                         * This path is saved in database.
                          */
-
-                        if (
-                            !empty($movie['poster_image']) &&
-                            strpos(
-                                $movie['poster_image'],
-                                'uploads/posters/'
-                            ) === 0
-                        ) {
-
-                            $old_file =
-                                __DIR__ .
-                                "/../" .
-                                $movie['poster_image'];
-
-
-                            if (file_exists($old_file)) {
-
-                                unlink($old_file);
-                            }
-                        }
-
-
-                        /* Save new database path */
 
                         $poster_image =
                             "uploads/posters/" .
                             $new_file_name;
 
-                    }
-
-                    else {
+                    } else {
 
                         $error =
                             "Failed to save poster image.";
@@ -303,106 +202,85 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
                 }
             }
         }
+    }
 
 
-        /* =================================================
-           UPDATE DATABASE
-        ================================================= */
+    /* =================================================
+       INSERT MOVIE INTO DATABASE
+    ================================================= */
 
-        if (empty($error)) {
+    if (empty($error)) {
 
-            $update = $conn->prepare("
-                UPDATE movies
-                SET
-                    name = ?,
-                    description = ?,
-                    genre = ?,
-                    language = ?,
-                    duration = ?,
-                    rating = ?,
-                    release_date = ?,
-                    poster_image = ?,
-                    trailer = ?,
-                    status = ?
-                WHERE id = ?
-            ");
+        $stmt = $conn->prepare("
+            INSERT INTO movies
+            (
+                name,
+                description,
+                genre,
+                language,
+                duration,
+                rating,
+                release_date,
+                poster_image,
+                trailer,
+                status
+            )
+            VALUES
+            (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ");
 
 
-            if (!$update) {
+        if (!$stmt) {
+
+            $error =
+                "Database error: " .
+                $conn->error;
+
+        } else {
+
+            $stmt->bind_param(
+                "ssssisssss",
+                $name,
+                $description,
+                $genre,
+                $language,
+                $duration,
+                $rating,
+                $release_date,
+                $poster_image,
+                $trailer,
+                $status
+            );
+
+
+            if ($stmt->execute()) {
+
+                $message =
+                    "Movie added successfully!";
+
+                /* -----------------------------------------
+                   CLEAR FORM
+                ----------------------------------------- */
+
+                $name = "";
+                $description = "";
+                $genre = "";
+                $language = "";
+                $duration = "";
+                $rating = "";
+                $release_date = "";
+                $trailer = "";
+                $status = "coming_soon";
+
+            } else {
 
                 $error =
-                    "Database error: " .
-                    $conn->error;
+                    "Failed to add movie: " .
+                    $stmt->error;
 
             }
 
-            else {
-
-                $update->bind_param(
-                    "ssssisssssi",
-                    $name,
-                    $description,
-                    $genre,
-                    $language,
-                    $duration,
-                    $rating,
-                    $release_date,
-                    $poster_image,
-                    $trailer,
-                    $status,
-                    $movie_id
-                );
-
-
-                if ($update->execute()) {
-
-                    $message =
-                        "Movie updated successfully!";
-
-
-                    /* Update displayed values */
-
-                    $movie['name'] = $name;
-
-                    $movie['description'] =
-                        $description;
-
-                    $movie['genre'] =
-                        $genre;
-
-                    $movie['language'] =
-                        $language;
-
-                    $movie['duration'] =
-                        $duration;
-
-                    $movie['rating'] =
-                        $rating;
-
-                    $movie['release_date'] =
-                        $release_date;
-
-                    $movie['poster_image'] =
-                        $poster_image;
-
-                    $movie['trailer'] =
-                        $trailer;
-
-                    $movie['status'] =
-                        $status;
-
-                }
-
-                else {
-
-                    $error =
-                        "Failed to update movie: " .
-                        $update->error;
-                }
-
-
-                $update->close();
-            }
+            $stmt->close();
         }
     }
 }
@@ -423,22 +301,14 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
     content="width=device-width, initial-scale=1.0"
 >
 
-<title>Edit Movie | TicketFlix</title>
+<title>Add Movie | TicketFlix</title>
 
-
-<!-- =================================================
-     GOOGLE FONT
-================================================= -->
 
 <link
     href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&display=swap"
     rel="stylesheet"
 >
 
-
-<!-- =================================================
-     FONT AWESOME
-================================================= -->
 
 <link
     rel="stylesheet"
@@ -447,10 +317,6 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
 
 <style>
-
-/* =====================================================
-   GLOBAL
-===================================================== */
 
 * {
     margin: 0;
@@ -482,9 +348,7 @@ body {
 }
 
 
-/* =====================================================
-   SIDEBAR
-===================================================== */
+/* ================= SIDEBAR ================= */
 
 .sidebar {
 
@@ -500,12 +364,9 @@ body {
     background: #120c1c;
 
     border-right:
-        1px solid
-        rgba(212,175,55,.18);
+        1px solid rgba(212,175,55,.18);
 
     padding: 30px 18px;
-
-    overflow-y: auto;
 }
 
 
@@ -586,9 +447,7 @@ body {
 }
 
 
-/* =====================================================
-   MAIN
-===================================================== */
+/* ================= MAIN ================= */
 
 .main {
 
@@ -600,9 +459,7 @@ body {
 }
 
 
-/* =====================================================
-   HEADER
-===================================================== */
+/* ================= HEADER ================= */
 
 .page-header {
 
@@ -645,40 +502,27 @@ body {
     color: #d4af37;
 
     border:
-        1px solid
-        rgba(212,175,55,.3);
+        1px solid rgba(212,175,55,.3);
 
     padding: 10px 18px;
 
     border-radius: 10px;
 
     font-size: 13px;
-
-    transition: .3s;
 }
 
 
-.back-btn:hover {
-
-    background:
-        rgba(212,175,55,.1);
-}
-
-
-/* =====================================================
-   FORM CARD
-===================================================== */
+/* ================= CARD ================= */
 
 .form-card {
 
-    max-width: 950px;
+    max-width: 1000px;
 
     background:
         rgba(255,255,255,.05);
 
     border:
-        1px solid
-        rgba(255,255,255,.08);
+        1px solid rgba(255,255,255,.08);
 
     border-radius: 22px;
 
@@ -686,9 +530,7 @@ body {
 }
 
 
-/* =====================================================
-   MESSAGE
-===================================================== */
+/* ================= MESSAGE ================= */
 
 .success {
 
@@ -696,8 +538,7 @@ body {
         rgba(46,204,113,.12);
 
     border:
-        1px solid
-        rgba(46,204,113,.3);
+        1px solid rgba(46,204,113,.3);
 
     color: #61e69b;
 
@@ -715,8 +556,7 @@ body {
         rgba(231,76,60,.12);
 
     border:
-        1px solid
-        rgba(231,76,60,.3);
+        1px solid rgba(231,76,60,.3);
 
     color: #ff8175;
 
@@ -728,9 +568,7 @@ body {
 }
 
 
-/* =====================================================
-   FORM GRID
-===================================================== */
+/* ================= FORM ================= */
 
 .form-grid {
 
@@ -747,10 +585,6 @@ body {
     grid-column: 1 / -1;
 }
 
-
-/* =====================================================
-   FORM GROUP
-===================================================== */
 
 .form-group {
 
@@ -776,10 +610,6 @@ body {
 }
 
 
-/* =====================================================
-   INPUTS
-===================================================== */
-
 .form-group input,
 .form-group textarea,
 .form-group select {
@@ -791,8 +621,7 @@ body {
     border-radius: 10px;
 
     border:
-        1px solid
-        rgba(255,255,255,.1);
+        1px solid rgba(255,255,255,.1);
 
     background:
         rgba(0,0,0,.25);
@@ -831,42 +660,24 @@ body {
 }
 
 
-/* =====================================================
-   CHOOSE FILE
-===================================================== */
+/* ================= FILE ================= */
 
 #poster_image {
-
-    width: 100%;
 
     padding: 12px;
 
     border:
-        1px solid
-        rgba(212,175,55,.25);
+        1px solid rgba(212,175,55,.25);
 
     border-radius: 10px;
 
-    background:
-        rgba(0,0,0,.25);
+    background: rgba(0,0,0,.25);
 
     color: #ccc;
 
     cursor: pointer;
-
-    font-family: inherit;
-
-    font-size: 13px;
 }
 
-
-#poster_image:hover {
-
-    border-color: #d4af37;
-}
-
-
-/* Browser choose file button */
 
 #poster_image::file-selector-button {
 
@@ -885,8 +696,6 @@ body {
 
     border-radius: 7px;
 
-    font-family: inherit;
-
     font-weight: 700;
 
     cursor: pointer;
@@ -894,16 +703,6 @@ body {
     margin-right: 12px;
 }
 
-
-#poster_image::file-selector-button:hover {
-
-    background: #e2bd45;
-}
-
-
-/* =====================================================
-   FILE INFORMATION
-===================================================== */
 
 .file-info {
 
@@ -924,18 +723,16 @@ body {
     font-size: 12px;
 
     margin-top: 7px;
-
-    display: none;
 }
 
 
-/* =====================================================
-   POSTER SECTION
-===================================================== */
+/* ================= POSTER PREVIEW ================= */
 
 .poster-section {
 
     margin-top: 25px;
+
+    display: none;
 }
 
 
@@ -962,14 +759,9 @@ body {
     overflow: hidden;
 
     border:
-        1px solid
-        rgba(212,175,55,.35);
+        1px solid rgba(212,175,55,.35);
 
     background: #0c0812;
-
-    box-shadow:
-        0 10px 30px
-        rgba(0,0,0,.3);
 }
 
 
@@ -980,14 +772,10 @@ body {
     height: 100%;
 
     object-fit: cover;
-
-    display: block;
 }
 
 
-/* =====================================================
-   BUTTONS
-===================================================== */
+/* ================= BUTTONS ================= */
 
 .form-buttons {
 
@@ -999,7 +787,7 @@ body {
 }
 
 
-.update-btn {
+.add-btn {
 
     border: none;
 
@@ -1023,18 +811,6 @@ body {
     cursor: pointer;
 
     font-size: 13px;
-
-    transition: .3s;
-}
-
-
-.update-btn:hover {
-
-    transform: translateY(-2px);
-
-    box-shadow:
-        0 8px 20px
-        rgba(212,175,55,.2);
 }
 
 
@@ -1052,27 +828,11 @@ body {
         rgba(255,255,255,.06);
 
     border:
-        1px solid
-        rgba(255,255,255,.1);
-
-    font-size: 13px;
-
-    transition: .3s;
+        1px solid rgba(255,255,255,.1);
 }
 
 
-.cancel-btn:hover {
-
-    background:
-        rgba(255,255,255,.1);
-
-    color: white;
-}
-
-
-/* =====================================================
-   RESPONSIVE
-===================================================== */
+/* ================= RESPONSIVE ================= */
 
 @media(max-width:800px) {
 
@@ -1081,21 +841,18 @@ body {
         width: 70px;
 
         padding: 20px 10px;
-
     }
 
 
     .logo {
 
         font-size: 0;
-
     }
 
 
     .logo i {
 
         font-size: 23px;
-
     }
 
 
@@ -1103,14 +860,12 @@ body {
     .sidebar a span {
 
         display: none;
-
     }
 
 
     .sidebar a {
 
         justify-content: center;
-
     }
 
 
@@ -1119,80 +874,49 @@ body {
         margin-left: 70px;
 
         padding: 20px;
-
-    }
-
-
-    .page-header {
-
-        flex-direction: column;
-
-        align-items: flex-start;
-
-        gap: 15px;
-
     }
 
 
     .form-grid {
 
         grid-template-columns: 1fr;
-
     }
 
 
     .full {
 
         grid-column: auto;
-
     }
 
 }
 
-
-/* =====================================================
-   MOBILE
-===================================================== */
 
 @media(max-width:500px) {
 
     .main {
 
         padding: 15px;
-
     }
 
 
     .form-card {
 
         padding: 20px;
-
-        border-radius: 16px;
-
-    }
-
-
-    .page-header h1 {
-
-        font-size: 23px;
-
     }
 
 
     .form-buttons {
 
         flex-direction: column;
-
     }
 
 
-    .update-btn,
+    .add-btn,
     .cancel-btn {
 
         width: 100%;
 
         text-align: center;
-
     }
 
 }
@@ -1254,10 +978,7 @@ body {
     </a>
 
 
-    <a
-        href="manage_movies.php"
-        class="active"
-    >
+    <a href="manage_movies.php" class="active">
 
         <i class="fa-solid fa-film"></i>
 
@@ -1303,18 +1024,20 @@ body {
 <main class="main">
 
 
-    <!-- HEADER -->
-
     <div class="page-header">
 
         <div>
 
             <h1>
-                Edit <span>Movie</span> 🎬
+
+                Add <span>Movie</span> 🎬
+
             </h1>
 
             <p>
-                Update movie information in TicketFlix.
+
+                Add a new movie to TicketFlix.
+
             </p>
 
         </div>
@@ -1333,12 +1056,8 @@ body {
 
 
 
-    <!-- FORM CARD -->
-
     <div class="form-card">
 
-
-        <!-- SUCCESS MESSAGE -->
 
         <?php if (!empty($message)): ?>
 
@@ -1353,9 +1072,6 @@ body {
         <?php endif; ?>
 
 
-
-        <!-- ERROR MESSAGE -->
-
         <?php if (!empty($error)): ?>
 
             <div class="error">
@@ -1369,10 +1085,6 @@ body {
         <?php endif; ?>
 
 
-
-        <!-- =================================================
-             FORM
-        ================================================= -->
 
         <form
             method="POST"
@@ -1394,12 +1106,12 @@ body {
                     <input
                         type="text"
                         name="name"
-                        value="<?= htmlspecialchars($movie['name']); ?>"
+                        value="<?= htmlspecialchars($name ?? ''); ?>"
+                        placeholder="The Godfather"
                         required
                     >
 
                 </div>
-
 
 
                 <!-- GENRE -->
@@ -1413,13 +1125,12 @@ body {
                     <input
                         type="text"
                         name="genre"
-                        value="<?= htmlspecialchars($movie['genre']); ?>"
-                        placeholder="Action, Comedy, Drama"
+                        value="<?= htmlspecialchars($genre ?? ''); ?>"
+                        placeholder="Action, Drama"
                         required
                     >
 
                 </div>
-
 
 
                 <!-- LANGUAGE -->
@@ -1433,12 +1144,12 @@ body {
                     <input
                         type="text"
                         name="language"
-                        value="<?= htmlspecialchars($movie['language']); ?>"
+                        value="<?= htmlspecialchars($language ?? ''); ?>"
+                        placeholder="English"
                         required
                     >
 
                 </div>
-
 
 
                 <!-- DURATION -->
@@ -1452,13 +1163,13 @@ body {
                     <input
                         type="number"
                         name="duration"
-                        value="<?= htmlspecialchars($movie['duration']); ?>"
+                        value="<?= htmlspecialchars($duration ?? ''); ?>"
+                        placeholder="175"
                         min="1"
                         required
                     >
 
                 </div>
-
 
 
                 <!-- RATING -->
@@ -1472,13 +1183,12 @@ body {
                     <input
                         type="text"
                         name="rating"
-                        value="<?= htmlspecialchars($movie['rating']); ?>"
-                        placeholder="8.5/10"
+                        value="<?= htmlspecialchars($rating ?? ''); ?>"
+                        placeholder="7.4"
                         required
                     >
 
                 </div>
-
 
 
                 <!-- RELEASE DATE -->
@@ -1492,11 +1202,10 @@ body {
                     <input
                         type="date"
                         name="release_date"
-                        value="<?= htmlspecialchars($movie['release_date'] ?? ''); ?>"
+                        value="<?= htmlspecialchars($release_date ?? ''); ?>"
                     >
 
                 </div>
-
 
 
                 <!-- STATUS -->
@@ -1507,36 +1216,25 @@ body {
                         Movie Status <span>*</span>
                     </label>
 
-                    <select
-                        name="status"
-                        required
-                    >
+                    <select name="status" required>
 
                         <option
                             value="coming_soon"
-                            <?= $movie['status'] === 'coming_soon'
-                                ? 'selected'
-                                : ''; ?>
+                            <?= (($status ?? '') === 'coming_soon') ? 'selected' : ''; ?>
                         >
                             Coming Soon
                         </option>
 
-
                         <option
                             value="now_showing"
-                            <?= $movie['status'] === 'now_showing'
-                                ? 'selected'
-                                : ''; ?>
+                            <?= (($status ?? '') === 'now_showing') ? 'selected' : ''; ?>
                         >
                             Now Showing
                         </option>
 
-
                         <option
                             value="expired"
-                            <?= $movie['status'] === 'expired'
-                                ? 'selected'
-                                : ''; ?>
+                            <?= (($status ?? '') === 'expired') ? 'selected' : ''; ?>
                         >
                             Expired
                         </option>
@@ -1546,38 +1244,29 @@ body {
                 </div>
 
 
-
-                <!-- =================================================
-                     POSTER IMAGE - CHOOSE FILE
-                ================================================= -->
+                <!-- POSTER -->
 
                 <div class="form-group">
 
                     <label>
-                        Poster Image
+                        Poster Image <span>*</span>
                     </label>
-
 
                     <input
                         type="file"
                         id="poster_image"
                         name="poster_image"
                         accept=".jpg,.jpeg,.png,.webp"
+                        required
                     >
-
 
                     <div class="file-info">
 
-                        <i class="fa-solid fa-circle-info"></i>
-
-                        Choose poster from your computer.
-
+                        JPG, JPEG, PNG or WEBP
                         <br>
-
-                        JPG, JPEG, PNG or WEBP | Maximum 5MB
+                        Maximum 5MB
 
                     </div>
-
 
                     <div
                         id="selectedFile"
@@ -1585,7 +1274,6 @@ body {
                     ></div>
 
                 </div>
-
 
 
                 <!-- DESCRIPTION -->
@@ -1596,14 +1284,12 @@ body {
                         Description
                     </label>
 
-
                     <textarea
                         name="description"
                         placeholder="Enter movie description..."
-                    ><?= htmlspecialchars($movie['description'] ?? ''); ?></textarea>
+                    ><?= htmlspecialchars($description ?? ''); ?></textarea>
 
                 </div>
-
 
 
                 <!-- TRAILER -->
@@ -1614,99 +1300,60 @@ body {
                         Trailer URL <span>*</span>
                     </label>
 
-
                     <input
                         type="text"
                         name="trailer"
-                        value="<?= htmlspecialchars($movie['trailer']); ?>"
+                        value="<?= htmlspecialchars($trailer ?? ''); ?>"
                         placeholder="https://www.youtube.com/watch?v=..."
                         required
                     >
 
                 </div>
 
+            </div>
+
+
+
+            <!-- POSTER PREVIEW -->
+
+            <div
+                class="poster-section"
+                id="previewSection"
+            >
+
+                <span class="poster-label">
+
+                    Poster Preview
+
+                </span>
+
+
+                <div class="poster-preview">
+
+                    <img
+                        id="posterPreview"
+                        src=""
+                        alt="Movie Poster"
+                    >
+
+                </div>
 
             </div>
 
 
 
-            <!-- =================================================
-                 POSTER PREVIEW
-            ================================================= -->
-
-            <?php if (!empty($movie['poster_image'])): ?>
-
-                <div
-                    class="poster-section"
-                    id="previewSection"
-                >
-
-                    <span class="poster-label">
-
-                        Current / Selected Poster
-
-                    </span>
-
-
-                    <div class="poster-preview">
-
-                        <img
-                            id="posterPreview"
-                            src="../<?= htmlspecialchars($movie['poster_image']); ?>"
-                            alt="Movie Poster"
-                            onerror="this.style.display='none';"
-                        >
-
-                    </div>
-
-                </div>
-
-            <?php else: ?>
-
-                <div
-                    class="poster-section"
-                    id="previewSection"
-                    style="display:none;"
-                >
-
-                    <span class="poster-label">
-
-                        Selected Poster
-
-                    </span>
-
-
-                    <div class="poster-preview">
-
-                        <img
-                            id="posterPreview"
-                            src=""
-                            alt="Movie Poster"
-                        >
-
-                    </div>
-
-                </div>
-
-            <?php endif; ?>
-
-
-
-            <!-- =================================================
-                 BUTTONS
-            ================================================= -->
+            <!-- BUTTONS -->
 
             <div class="form-buttons">
 
-
                 <button
                     type="submit"
-                    class="update-btn"
+                    class="add-btn"
                 >
 
-                    <i class="fa-solid fa-floppy-disk"></i>
+                    <i class="fa-solid fa-plus"></i>
 
-                    Update Movie
+                    Add Movie
 
                 </button>
 
@@ -1720,23 +1367,16 @@ body {
 
                 </a>
 
-
             </div>
 
 
         </form>
 
-
     </div>
-
 
 </main>
 
 
-
-<!-- =====================================================
-     JAVASCRIPT
-===================================================== -->
 
 <script>
 
@@ -1753,106 +1393,87 @@ const previewSection =
     document.getElementById("previewSection");
 
 
-posterInput.addEventListener(
-    "change",
-    function () {
+posterInput.addEventListener("change", function () {
 
-        const file = this.files[0];
+    const file = this.files[0];
 
+    if (!file) {
 
-        /* ---------------------------------------------
-           No file selected
-        --------------------------------------------- */
+        selectedFile.style.display = "none";
 
-        if (!file) {
+        previewSection.style.display = "none";
 
-            selectedFile.style.display = "none";
-
-            return;
-        }
+        return;
+    }
 
 
-        /* ---------------------------------------------
-           File size check
-        --------------------------------------------- */
+    /* FILE SIZE */
 
-        if (file.size > 5 * 1024 * 1024) {
+    if (file.size > 5 * 1024 * 1024) {
 
-            alert(
-                "Poster image must be less than 5MB."
-            );
+        alert("Poster image must be less than 5MB.");
 
-            this.value = "";
+        this.value = "";
 
-            selectedFile.style.display = "none";
+        selectedFile.style.display = "none";
 
-            return;
-        }
+        previewSection.style.display = "none";
+
+        return;
+    }
 
 
-        /* ---------------------------------------------
-           File type check
-        --------------------------------------------- */
+    /* FILE TYPE */
 
-        const allowedTypes = [
-            "image/jpeg",
-            "image/png",
-            "image/webp"
-        ];
+    const allowedTypes = [
+        "image/jpeg",
+        "image/png",
+        "image/webp"
+    ];
 
 
-        if (!allowedTypes.includes(file.type)) {
+    if (!allowedTypes.includes(file.type)) {
 
-            alert(
-                "Only JPG, JPEG, PNG and WEBP images are allowed."
-            );
+        alert(
+            "Only JPG, JPEG, PNG and WEBP images are allowed."
+        );
 
-            this.value = "";
+        this.value = "";
 
-            selectedFile.style.display = "none";
+        selectedFile.style.display = "none";
 
-            return;
-        }
+        previewSection.style.display = "none";
+
+        return;
+    }
 
 
-        /* ---------------------------------------------
-           Show selected file name
-        --------------------------------------------- */
+    /* FILE NAME */
 
-        selectedFile.innerHTML =
-            '<i class="fa-solid fa-image"></i> ' +
-            file.name;
+    selectedFile.innerHTML =
+        '<i class="fa-solid fa-image"></i> ' +
+        file.name;
 
-        selectedFile.style.display =
+    selectedFile.style.display = "block";
+
+
+    /* PREVIEW */
+
+    const reader = new FileReader();
+
+    reader.onload = function (event) {
+
+        posterPreview.src =
+            event.target.result;
+
+        previewSection.style.display =
             "block";
 
+    };
 
-        /* ---------------------------------------------
-           Show instant preview
-        --------------------------------------------- */
+    reader.readAsDataURL(file);
 
-        const reader =
-            new FileReader();
-
-
-        reader.onload =
-            function (event) {
-
-                posterPreview.src =
-                    event.target.result;
-
-                posterPreview.style.display =
-                    "block";
-
-                previewSection.style.display =
-                    "block";
-            };
-
-
-        reader.readAsDataURL(file);
-
-    }
-);
+});
 
 </script>
 

@@ -1,4 +1,3 @@
-```php
 <?php
 
 session_start();
@@ -47,11 +46,13 @@ if ($result->num_rows > 0) {
 
 $stmt->close();
 
+
 if (!$theater) {
     session_destroy();
     header("Location: login.php");
     exit();
 }
+
 
 $theater_name =
     $theater['name'] ?? "My Theater";
@@ -80,6 +81,7 @@ $sql = "
         st.show_time,
         st.price,
 
+        m.id AS movie_id,
         m.name AS movie_name,
         m.poster_image,
 
@@ -98,7 +100,9 @@ $sql = "
 ";
 
 
-/* SEARCH FILTER */
+/* =========================================================
+   SEARCH FILTER
+========================================================= */
 
 if ($search !== "") {
 
@@ -106,7 +110,10 @@ if ($search !== "") {
         AND (
             m.name LIKE ?
             OR s.screen_name LIKE ?
-            OR DATE_FORMAT(st.show_date, '%d %M %Y') LIKE ?
+            OR DATE_FORMAT(
+                st.show_date,
+                '%d %M %Y'
+            ) LIKE ?
         )
     ";
 }
@@ -120,6 +127,11 @@ $sql .= "
 
 
 $stmt = $conn->prepare($sql);
+
+
+if (!$stmt) {
+    die("Database Error: " . $conn->error);
+}
 
 
 if ($search !== "") {
@@ -151,8 +163,8 @@ $result = $stmt->get_result();
 while ($row = $result->fetch_assoc()) {
 
     $showtimes[] = $row;
-
 }
+
 
 $stmt->close();
 
@@ -164,15 +176,19 @@ $stmt->close();
 $message = "";
 $message_type = "";
 
+
 if (isset($_GET['success'])) {
 
     if ($_GET['success'] === "deleted") {
 
-        $message = "Showtime deleted successfully.";
-        $message_type = "success";
-    }
+        $message =
+            "Showtime deleted successfully.";
 
+        $message_type =
+            "success";
+    }
 }
+
 
 if (isset($_GET['error'])) {
 
@@ -181,28 +197,32 @@ if (isset($_GET['error'])) {
         $message =
             "This showtime cannot be deleted because bookings already exist.";
 
-        $message_type = "error";
+        $message_type =
+            "error";
 
     } elseif ($_GET['error'] === "not_allowed") {
 
         $message =
             "You are not allowed to delete this showtime.";
 
-        $message_type = "error";
+        $message_type =
+            "error";
 
     } elseif ($_GET['error'] === "delete_failed") {
 
         $message =
             "Unable to delete the showtime.";
 
-        $message_type = "error";
+        $message_type =
+            "error";
 
     } elseif ($_GET['error'] === "invalid_showtime") {
 
         $message =
             "Invalid showtime selected.";
 
-        $message_type = "error";
+        $message_type =
+            "error";
     }
 }
 
@@ -210,6 +230,7 @@ if (isset($_GET['error'])) {
 
 
 <!DOCTYPE html>
+
 <html lang="en">
 
 <head>
@@ -224,11 +245,19 @@ if (isset($_GET['error'])) {
 <title>Showtimes | TicketFlix</title>
 
 
+<!-- =====================================================
+     GOOGLE FONT
+===================================================== -->
+
 <link
     href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&display=swap"
     rel="stylesheet"
 >
 
+
+<!-- =====================================================
+     FONT AWESOME
+===================================================== -->
 
 <link
     rel="stylesheet"
@@ -248,6 +277,7 @@ if (isset($_GET['error'])) {
     box-sizing: border-box;
 }
 
+
 body {
 
     min-height: 100vh;
@@ -258,6 +288,11 @@ body {
         radial-gradient(
             circle at top right,
             rgba(126,87,194,.25),
+            transparent 35%
+        ),
+        radial-gradient(
+            circle at bottom left,
+            rgba(212,175,55,.08),
             transparent 35%
         ),
         #100b18;
@@ -327,7 +362,9 @@ body {
 }
 
 
-/* THEATER BOX */
+/* =========================================================
+   THEATER BOX
+========================================================= */
 
 .theater-box {
 
@@ -386,7 +423,9 @@ body {
 }
 
 
-/* SIDEBAR LINKS */
+/* =========================================================
+   SIDEBAR LINKS
+========================================================= */
 
 .sidebar a {
 
@@ -450,6 +489,8 @@ body {
     margin-left: 250px;
 
     padding: 35px;
+
+    min-height: 100vh;
 }
 
 
@@ -562,7 +603,7 @@ body {
 
     gap: 8px;
 
-    width: 380px;
+    width: 430px;
 }
 
 
@@ -867,7 +908,7 @@ tbody tr:hover {
 
 
 /* =========================================================
-   MOVIE
+   MOVIE CELL
 ========================================================= */
 
 .movie-cell {
@@ -876,22 +917,45 @@ tbody tr:hover {
 
     align-items: center;
 
-    gap: 10px;
+    gap: 12px;
 
-    min-width: 190px;
+    min-width: 210px;
 }
 
+
+/* =========================================================
+   MOVIE POSTER
+========================================================= */
 
 .movie-poster {
 
-    width: 42px;
-    height: 58px;
+    width: 48px;
+
+    height: 65px;
 
     object-fit: cover;
 
+    object-position: center;
+
     border-radius: 7px;
+
+    display: block;
+
+    flex-shrink: 0;
+
+    background: #21172c;
+
+    border:
+        1px solid rgba(212,175,55,.18);
+
+    box-shadow:
+        0 4px 12px rgba(0,0,0,.25);
 }
 
+
+/* =========================================================
+   MOVIE NAME
+========================================================= */
 
 .movie-name {
 
@@ -900,6 +964,8 @@ tbody tr:hover {
     font-weight: 600;
 
     font-size: 11px;
+
+    line-height: 1.4;
 }
 
 
@@ -912,6 +978,8 @@ tbody tr:hover {
     color: #b58cff;
 
     font-weight: 600;
+
+    white-space: nowrap;
 }
 
 
@@ -926,6 +994,8 @@ tbody tr:hover {
     font-weight: 600;
 
     display: block;
+
+    white-space: nowrap;
 }
 
 
@@ -1087,7 +1157,6 @@ tbody tr:hover {
 
         padding: 25px;
     }
-
 }
 
 
@@ -1165,6 +1234,11 @@ tbody tr:hover {
         width: 100%;
     }
 
+
+    .add-btn {
+
+        justify-content: center;
+    }
 }
 
 
@@ -1196,7 +1270,6 @@ tbody tr:hover {
 
         padding: 0 15px;
     }
-
 }
 
 </style>
@@ -1213,6 +1286,7 @@ tbody tr:hover {
 
 <aside class="sidebar">
 
+
     <div class="logo">
 
         <i class="fa-solid fa-ticket"></i>
@@ -1228,6 +1302,8 @@ tbody tr:hover {
 
     </div>
 
+
+    <!-- THEATER DETAILS -->
 
     <div class="theater-box">
 
@@ -1258,6 +1334,8 @@ tbody tr:hover {
     </div>
 
 
+    <!-- DASHBOARD -->
+
     <a href="dashboard.php">
 
         <i class="fa-solid fa-chart-line"></i>
@@ -1267,7 +1345,12 @@ tbody tr:hover {
     </a>
 
 
-    <a href="showtimes.php" class="active">
+    <!-- SHOWTIMES -->
+
+    <a
+        href="showtimes.php"
+        class="active"
+    >
 
         <i class="fa-solid fa-clock"></i>
 
@@ -1275,6 +1358,8 @@ tbody tr:hover {
 
     </a>
 
+
+    <!-- ADD SHOWTIME -->
 
     <a href="add_showtime.php">
 
@@ -1285,6 +1370,8 @@ tbody tr:hover {
     </a>
 
 
+    <!-- SCREENS -->
+
     <a href="screens.php">
 
         <i class="fa-solid fa-tv"></i>
@@ -1293,6 +1380,8 @@ tbody tr:hover {
 
     </a>
 
+
+    <!-- BOOKINGS -->
 
     <a href="bookings.php">
 
@@ -1303,6 +1392,8 @@ tbody tr:hover {
     </a>
 
 
+    <!-- WEBSITE -->
+
     <a href="../index.php">
 
         <i class="fa-solid fa-globe"></i>
@@ -1312,7 +1403,12 @@ tbody tr:hover {
     </a>
 
 
-    <a href="logout.php" class="logout">
+    <!-- LOGOUT -->
+
+    <a
+        href="logout.php"
+        class="logout"
+    >
 
         <i class="fa-solid fa-right-from-bracket"></i>
 
@@ -1320,8 +1416,8 @@ tbody tr:hover {
 
     </a>
 
-</aside>
 
+</aside>
 
 
 <!-- =========================================================
@@ -1344,6 +1440,7 @@ tbody tr:hover {
 
             </h1>
 
+
             <p>
 
                 Search, edit and manage showtimes for your theater.
@@ -1364,7 +1461,12 @@ tbody tr:hover {
 
             <div>
 
-                <small>Logged in as</small>
+                <small>
+
+                    Logged in as
+
+                </small>
+
 
                 <strong>
 
@@ -1381,13 +1483,14 @@ tbody tr:hover {
     </div>
 
 
-
     <!-- =====================================================
          ACTION BAR
     ====================================================== -->
 
     <div class="action-bar">
 
+
+        <!-- SEARCH -->
 
         <form
             method="GET"
@@ -1398,6 +1501,7 @@ tbody tr:hover {
             <div class="search-input">
 
                 <i class="fa-solid fa-search"></i>
+
 
                 <input
                     type="text"
@@ -1433,8 +1537,11 @@ tbody tr:hover {
 
             <?php } ?>
 
+
         </form>
 
+
+        <!-- ADD SHOWTIME -->
 
         <a
             href="add_showtime.php"
@@ -1447,8 +1554,8 @@ tbody tr:hover {
 
         </a>
 
-    </div>
 
+    </div>
 
 
     <!-- =====================================================
@@ -1457,7 +1564,9 @@ tbody tr:hover {
 
     <?php if ($message !== "") { ?>
 
-        <div class="message <?php echo $message_type; ?>">
+        <div
+            class="message <?php echo $message_type; ?>"
+        >
 
             <?php if ($message_type === "success") { ?>
 
@@ -1471,13 +1580,14 @@ tbody tr:hover {
 
 
             <?php
+
             echo htmlspecialchars($message);
+
             ?>
 
         </div>
 
     <?php } ?>
-
 
 
     <!-- =====================================================
@@ -1500,12 +1610,12 @@ tbody tr:hover {
             <div class="count">
 
                 <?php echo count($showtimes); ?>
+
                 showtime(s)
 
             </div>
 
         </div>
-
 
 
         <?php if (!empty($showtimes)) { ?>
@@ -1521,15 +1631,25 @@ tbody tr:hover {
 
                         <tr>
 
-                            <th>Movie</th>
+                            <th>
+                                Movie
+                            </th>
 
-                            <th>Screen</th>
+                            <th>
+                                Screen
+                            </th>
 
-                            <th>Date & Time</th>
+                            <th>
+                                Date & Time
+                            </th>
 
-                            <th>Price</th>
+                            <th>
+                                Price
+                            </th>
 
-                            <th>Actions</th>
+                            <th>
+                                Actions
+                            </th>
 
                         </tr>
 
@@ -1544,10 +1664,76 @@ tbody tr:hover {
 
                         <?php
 
-                        $poster =
-                            !empty($show['poster_image'])
-                            ? $show['poster_image']
-                            : "https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?auto=format&fit=crop&w=200&q=80";
+                        /*
+                         * =================================================
+                         * POSTER PATH FIX
+                         * =================================================
+                         *
+                         * Database example:
+                         *
+                         * uploads/the_godfather_1787219774.jpg
+                         *
+                         * Current file:
+                         *
+                         * theater/showtimes.php
+                         *
+                         * So browser needs:
+                         *
+                         * ../uploads/the_godfather_1787219774.jpg
+                         *
+                         */
+
+                        $poster = "";
+
+                        if (!empty($show['poster_image'])) {
+
+                            $posterPath =
+                                trim($show['poster_image']);
+
+
+                            /*
+                             * If database contains full URL
+                             */
+
+                            if (
+                                preg_match(
+                                    '/^https?:\/\//i',
+                                    $posterPath
+                                )
+                            ) {
+
+                                $poster =
+                                    $posterPath;
+
+                            }
+
+
+                            /*
+                             * If database contains uploads/...
+                             */
+
+                            else {
+
+                                $poster =
+                                    "../" .
+                                    ltrim(
+                                        $posterPath,
+                                        "/"
+                                    );
+                            }
+
+                        }
+
+
+                        /*
+                         * Fallback image
+                         */
+
+                        if (empty($poster)) {
+
+                            $poster =
+                                "https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?auto=format&fit=crop&w=200&q=80";
+                        }
 
                         ?>
 
@@ -1555,38 +1741,44 @@ tbody tr:hover {
                         <tr>
 
 
-                            <!-- MOVIE -->
+                            <!-- =================================================
+                                 MOVIE
+                            ================================================= -->
 
                             <td>
 
                                 <div class="movie-cell">
 
+
                                     <img
-                                        src="<?php
-                                        echo htmlspecialchars($poster);
-                                        ?>"
+                                        src="<?php echo htmlspecialchars($poster); ?>"
                                         class="movie-poster"
-                                        alt="Movie"
+                                        alt="<?php echo htmlspecialchars($show['movie_name']); ?>"
+                                        onerror="this.onerror=null; this.src='https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?auto=format&fit=crop&w=200&q=80';"
                                     >
 
 
                                     <span class="movie-name">
 
                                         <?php
+
                                         echo htmlspecialchars(
                                             $show['movie_name']
                                         );
+
                                         ?>
 
                                     </span>
+
 
                                 </div>
 
                             </td>
 
 
-
-                            <!-- SCREEN -->
+                            <!-- =================================================
+                                 SCREEN
+                            ================================================= -->
 
                             <td>
 
@@ -1595,9 +1787,11 @@ tbody tr:hover {
                                     <i class="fa-solid fa-tv"></i>
 
                                     <?php
+
                                     echo htmlspecialchars(
                                         $show['screen_name']
                                     );
+
                                     ?>
 
                                 </span>
@@ -1605,20 +1799,31 @@ tbody tr:hover {
                             </td>
 
 
-
-                            <!-- DATE + TIME -->
+                            <!-- =================================================
+                                 DATE + TIME
+                            ================================================= -->
 
                             <td>
 
                                 <span class="show-date">
 
                                     <?php
-                                    echo date(
-                                        "d M Y",
-                                        strtotime(
-                                            $show['show_date']
-                                        )
-                                    );
+
+                                    if (!empty($show['show_date'])) {
+
+                                        echo date(
+                                            "d M Y",
+                                            strtotime(
+                                                $show['show_date']
+                                            )
+                                        );
+
+                                    } else {
+
+                                        echo "N/A";
+
+                                    }
+
                                     ?>
 
                                 </span>
@@ -1629,12 +1834,22 @@ tbody tr:hover {
                                     <i class="fa-regular fa-clock"></i>
 
                                     <?php
-                                    echo date(
-                                        "h:i A",
-                                        strtotime(
-                                            $show['show_time']
-                                        )
-                                    );
+
+                                    if (!empty($show['show_time'])) {
+
+                                        echo date(
+                                            "h:i A",
+                                            strtotime(
+                                                $show['show_time']
+                                            )
+                                        );
+
+                                    } else {
+
+                                        echo "N/A";
+
+                                    }
+
                                     ?>
 
                                 </span>
@@ -1642,18 +1857,21 @@ tbody tr:hover {
                             </td>
 
 
-
-                            <!-- PRICE -->
+                            <!-- =================================================
+                                 PRICE
+                            ================================================= -->
 
                             <td>
 
                                 <span class="price">
 
                                     ₹<?php
+
                                     echo number_format(
                                         (float) $show['price'],
                                         2
                                     );
+
                                     ?>
 
                                 </span>
@@ -1661,8 +1879,9 @@ tbody tr:hover {
                             </td>
 
 
-
-                            <!-- ACTIONS -->
+                            <!-- =================================================
+                                 ACTIONS
+                            ================================================= -->
 
                             <td>
 
@@ -1672,7 +1891,7 @@ tbody tr:hover {
                                     <!-- EDIT -->
 
                                     <a
-                                        href="edit_showtime.php?id=<?php echo (int)$show['id']; ?>"
+                                        href="edit_showtime.php?id=<?php echo (int) $show['id']; ?>"
                                         class="action-btn edit-btn"
                                         title="Edit Showtime"
                                     >
@@ -1682,11 +1901,10 @@ tbody tr:hover {
                                     </a>
 
 
-
                                     <!-- DELETE -->
 
                                     <a
-                                        href="delete_showtime.php?id=<?php echo (int)$show['id']; ?>"
+                                        href="delete_showtime.php?id=<?php echo (int) $show['id']; ?>"
                                         class="action-btn delete-btn"
                                         title="Delete Showtime"
                                         onclick="return confirm('Are you sure you want to delete this showtime?');"
@@ -1710,7 +1928,6 @@ tbody tr:hover {
 
                     </tbody>
 
-
                 </table>
 
 
@@ -1720,7 +1937,12 @@ tbody tr:hover {
         <?php } else { ?>
 
 
+            <!-- =================================================
+                 EMPTY
+            ================================================= -->
+
             <div class="empty">
+
 
                 <i class="fa-solid fa-calendar-xmark"></i>
 
@@ -1728,11 +1950,17 @@ tbody tr:hover {
                 <h3>
 
                     <?php
+
                     if ($search !== "") {
+
                         echo "No Showtimes Found";
+
                     } else {
+
                         echo "No Showtimes Yet";
+
                     }
+
                     ?>
 
                 </h3>
@@ -1741,11 +1969,17 @@ tbody tr:hover {
                 <p>
 
                     <?php
+
                     if ($search !== "") {
+
                         echo "Try another movie or screen name.";
+
                     } else {
+
                         echo "Add your first movie showtime to get started.";
+
                     }
+
                     ?>
 
                 </p>
@@ -1763,6 +1997,7 @@ tbody tr:hover {
 
                 <?php } ?>
 
+
             </div>
 
 
@@ -1778,4 +2013,3 @@ tbody tr:hover {
 </body>
 
 </html>
-```

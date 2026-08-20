@@ -144,14 +144,8 @@ $total_screen_seats = (int)$screen['total_seats'];
 
 /*
 |--------------------------------------------------------------------------
-| AUTO CREATE SEATS IF SCREEN HAS NO SEATS
+| CHECK EXISTING SEATS
 |--------------------------------------------------------------------------
-|
-| IMPORTANT:
-|
-| New screen/movie ke liye agar seats table mein seats nahi hain,
-| to yahan automatically seats create hongi.
-|
 */
 
 $count_stmt = $conn->prepare("
@@ -191,7 +185,7 @@ $existing_seat_count =
 
 /*
 |--------------------------------------------------------------------------
-| CREATE DEFAULT SEATS
+| AUTO CREATE SEATS
 |--------------------------------------------------------------------------
 */
 
@@ -199,12 +193,6 @@ if (
     $existing_seat_count === 0 &&
     $total_screen_seats > 0
 ) {
-
-    /*
-    |----------------------------------------------------------------------
-    | 10 seats per row
-    |----------------------------------------------------------------------
-    */
 
     $seats_per_row = 10;
 
@@ -245,24 +233,12 @@ if (
         $seat_index++
     ) {
 
-        /*
-        |------------------------------------------------------------------
-        | ROW CALCULATION
-        |------------------------------------------------------------------
-        */
-
         $row_number =
             intdiv(
                 $seat_index,
                 $seats_per_row
             );
 
-
-        /*
-        |------------------------------------------------------------------
-        | A, B, C, ... Z, AA, AB...
-        |------------------------------------------------------------------
-        */
 
         $row_name = '';
 
@@ -302,13 +278,14 @@ if (
 
         if (!$insert_seat_stmt->execute()) {
 
+            $error =
+                $insert_seat_stmt->error;
+
             $insert_seat_stmt->close();
 
             die(
                 "Seat creation failed: " .
-                htmlspecialchars(
-                    $insert_seat_stmt->error
-                )
+                htmlspecialchars($error)
             );
 
         }
@@ -325,9 +302,6 @@ if (
 |--------------------------------------------------------------------------
 | GET SEATS
 |--------------------------------------------------------------------------
-|
-| Yahan booked seats bhi check ho rahi hain.
-|
 */
 
 $stmt = $conn->prepare("
@@ -340,7 +314,7 @@ $stmt = $conn->prepare("
         s.is_active,
 
         CASE
-            WHEN bs.seat_id IS NOT NULL
+            WHEN b.id IS NOT NULL
             THEN 1
             ELSE 0
         END AS is_booked
@@ -368,7 +342,8 @@ $stmt = $conn->prepare("
         s.seat_row,
         s.seat_number,
         s.seat_type,
-        s.is_active
+        s.is_active,
+        b.id
 
     ORDER BY
         s.seat_row ASC,
@@ -499,11 +474,15 @@ if ($movie_stmt) {
 
             $movie_name = $movie['name'];
 
-        } elseif (isset($movie['title'])) {
+        }
+
+        elseif (isset($movie['title'])) {
 
             $movie_name = $movie['title'];
 
-        } elseif (isset($movie['movie_name'])) {
+        }
+
+        elseif (isset($movie['movie_name'])) {
 
             $movie_name = $movie['movie_name'];
 
@@ -535,7 +514,9 @@ foreach (
 
         $booked_count++;
 
-    } else {
+    }
+
+    else {
 
         $available_count++;
 
@@ -562,13 +543,19 @@ foreach (
     Select Seats | TicketFlix
 </title>
 
+
 <style>
 
 * {
+
     box-sizing: border-box;
+
     margin: 0;
+
     padding: 0;
+
 }
+
 
 body {
 
@@ -636,7 +623,7 @@ body {
 
 .logo span {
 
-    color: #ff315f;
+    color: #f4c430;
 
 }
 
@@ -663,7 +650,9 @@ body {
 
 .back-btn:hover {
 
-    background: #ff315f;
+    background: #f4c430;
+
+    color: #21102f;
 
 }
 
@@ -706,13 +695,11 @@ body {
 }
 
 
-/* MOVIE */
-
 .movie-name {
 
     text-align: center;
 
-    color: #ff315f;
+    color: #f4c430;
 
     font-size: 19px;
 
@@ -770,12 +757,12 @@ body {
 
 .price {
 
-    color: #ff315f !important;
+    color: #f4c430 !important;
 
 }
 
 
-/* AVAILABLE */
+/* AVAILABILITY */
 
 .availability {
 
@@ -975,7 +962,7 @@ body {
         translateY(-3px);
 
     border-color:
-        #ff315f;
+        #f4c430;
 
 }
 
@@ -1029,7 +1016,7 @@ body {
 
     font-size: 22px;
 
-    color: #ff315f;
+    color: #ff7777;
 
     z-index: 2;
 
@@ -1052,18 +1039,18 @@ body {
     background:
         linear-gradient(
             145deg,
-            #ff315f,
-            #c91443
+            #f4c430,
+            #dba900
         );
 
     border-color:
-        #ff6c89;
+        #ffe17a;
 
-    color: white;
+    color: #21102f;
 
     box-shadow:
         0 7px 20px
-        rgba(255,49,95,.4);
+        rgba(244,196,48,.4);
 
     transform:
         translateY(-3px);
@@ -1074,7 +1061,7 @@ body {
 .seat.selected::after {
 
     background:
-        #a70d38;
+        #b58a00;
 
 }
 
@@ -1140,7 +1127,7 @@ body {
 
 .legend-seat.selected {
 
-    background: #ff315f;
+    background: #f4c430;
 
 }
 
@@ -1167,7 +1154,7 @@ body {
 }
 
 
-/* BOTTOM */
+/* BOTTOM BAR */
 
 .bottom-bar {
 
@@ -1245,7 +1232,7 @@ body {
 
 .total {
 
-    color: #ff315f;
+    color: #f4c430;
 
 }
 
@@ -1262,11 +1249,11 @@ body {
     background:
         linear-gradient(
             135deg,
-            #ff315f,
-            #d91647
+            #f4c430,
+            #dfa900
         );
 
-    color: white;
+    color: #21102f;
 
     font-size: 15px;
 
@@ -1621,9 +1608,7 @@ body {
 
                                 <?= htmlspecialchars(
                                     $row_name
-                                ); ?>
-
-                                <?= (int)$seat['seat_number']; ?>
+                                ); ?><?= (int)$seat['seat_number']; ?>
 
                             </button>
 
@@ -1708,6 +1693,10 @@ body {
 
 
 
+<!-- =====================================================
+     BOTTOM BAR
+====================================================== -->
+
 <div class="bottom-bar">
 
 
@@ -1749,6 +1738,10 @@ body {
 
 
 
+        <!-- IMPORTANT:
+             This button is handled by JavaScript.
+        -->
+
         <button
             type="button"
             class="continue-btn"
@@ -1769,297 +1762,397 @@ body {
 
 <script>
 
-
 /*
 |--------------------------------------------------------------------------
-| ELEMENTS
+| TICKETFLIX SEAT SELECTION JAVASCRIPT
 |--------------------------------------------------------------------------
 */
 
-const seats =
-    document.querySelectorAll(
-        ".seat:not(.booked)"
-    );
+
+document.addEventListener(
+    "DOMContentLoaded",
+    function () {
 
 
-const selectedCount =
-    document.getElementById(
-        "selectedCount"
-    );
+        /*
+        |--------------------------------------------------------------------------
+        | GET ALL AVAILABLE SEATS
+        |--------------------------------------------------------------------------
+        */
+
+        const seats =
+            document.querySelectorAll(
+                ".seat:not(.booked)"
+            );
 
 
-const totalPrice =
-    document.getElementById(
-        "totalPrice"
-    );
+        /*
+        |--------------------------------------------------------------------------
+        | GET UI ELEMENTS
+        |--------------------------------------------------------------------------
+        */
+
+        const selectedCount =
+            document.getElementById(
+                "selectedCount"
+            );
 
 
-const continueBtn =
-    document.getElementById(
-        "continueBtn"
-    );
+        const totalPrice =
+            document.getElementById(
+                "totalPrice"
+            );
 
 
-let selectedSeats = [];
+        const continueBtn =
+            document.getElementById(
+                "continueBtn"
+            );
 
 
-/*
-|--------------------------------------------------------------------------
-| SEAT CLICK
-|--------------------------------------------------------------------------
-*/
+        /*
+        |--------------------------------------------------------------------------
+        | STORE SELECTED SEATS
+        |--------------------------------------------------------------------------
+        */
 
-seats.forEach(function(seat) {
-
-
-    seat.addEventListener(
-        "click",
-        function() {
+        let selectedSeats = [];
 
 
-            const seatId =
-                this.dataset.seatId;
+        /*
+        |--------------------------------------------------------------------------
+        | SEAT CLICK
+        |--------------------------------------------------------------------------
+        */
+
+        seats.forEach(
+            function (seat) {
 
 
-            const seatRow =
-                this.dataset.seatRow;
+                seat.addEventListener(
+                    "click",
+                    function () {
 
 
-            const seatNumber =
-                this.dataset.seatNumber;
+                        /*
+                        | Get seat ID
+                        */
+
+                        const seatId =
+                            String(
+                                this.dataset.seatId
+                            );
 
 
-            const seatType =
-                this.dataset.seatType;
+                        const seatRow =
+                            this.dataset.seatRow;
 
 
-            const price =
-                parseFloat(
-                    this.dataset.price
-                ) || 0;
+                        const seatNumber =
+                            this.dataset.seatNumber;
 
 
-            const existingIndex =
-                selectedSeats.findIndex(
-                    function(item) {
+                        const seatType =
+                            this.dataset.seatType;
 
-                        return (
-                            item.id ===
-                            seatId
-                        );
+
+                        const price =
+                            parseFloat(
+                                this.dataset.price
+                            ) || 0;
+
+
+                        /*
+                        | Check if already selected
+                        */
+
+                        const existingIndex =
+                            selectedSeats.findIndex(
+                                function (item) {
+
+                                    return (
+                                        item.id ===
+                                        seatId
+                                    );
+
+                                }
+                            );
+
+
+                        /*
+                        |--------------------------------------------------------------------------
+                        | UNSELECT SEAT
+                        |--------------------------------------------------------------------------
+                        */
+
+                        if (
+                            existingIndex !== -1
+                        ) {
+
+
+                            selectedSeats.splice(
+                                existingIndex,
+                                1
+                            );
+
+
+                            this.classList.remove(
+                                "selected"
+                            );
+
+
+                        }
+
+
+                        /*
+                        |--------------------------------------------------------------------------
+                        | SELECT SEAT
+                        |--------------------------------------------------------------------------
+                        */
+
+                        else {
+
+
+                            selectedSeats.push({
+
+                                id:
+                                    seatId,
+
+                                row:
+                                    seatRow,
+
+                                number:
+                                    seatNumber,
+
+                                type:
+                                    seatType,
+
+                                price:
+                                    price
+
+                            });
+
+
+                            this.classList.add(
+                                "selected"
+                            );
+
+
+                        }
+
+
+                        /*
+                        | Update bottom bar
+                        */
+
+                        updateSelection();
+
 
                     }
                 );
 
 
-            /*
-            |--------------------------------------------------------------------------
-            | UNSELECT
-            |--------------------------------------------------------------------------
-            */
-
-            if (
-                existingIndex !== -1
-            ) {
-
-
-                selectedSeats.splice(
-                    existingIndex,
-                    1
-                );
-
-
-                this.classList.remove(
-                    "selected"
-                );
-
-
             }
-
-            /*
-            |--------------------------------------------------------------------------
-            | SELECT
-            |--------------------------------------------------------------------------
-            */
-
-            else {
-
-
-                selectedSeats.push({
-
-                    id: seatId,
-
-                    row: seatRow,
-
-                    number: seatNumber,
-
-                    type: seatType,
-
-                    price: price
-
-                });
-
-
-                this.classList.add(
-                    "selected"
-                );
-
-            }
-
-
-            updateSelection();
-
-
-        }
-    );
-
-
-});
-
-
-/*
-|--------------------------------------------------------------------------
-| UPDATE
-|--------------------------------------------------------------------------
-*/
-
-function updateSelection() {
-
-
-    selectedCount.textContent =
-        selectedSeats.length;
-
-
-    let total = 0;
-
-
-    selectedSeats.forEach(
-        function(seat) {
-
-            total += seat.price;
-
-        }
-    );
-
-
-    totalPrice.textContent =
-        total.toFixed(2);
-
-
-    continueBtn.disabled =
-        selectedSeats.length === 0;
-
-}
-
-
-/*
-|--------------------------------------------------------------------------
-| CONTINUE
-|--------------------------------------------------------------------------
-*/
-
-continueBtn.addEventListener(
-    "click",
-    function() {
-
-
-        if (
-            selectedSeats.length === 0
-        ) {
-
-            alert(
-                "Please select at least one seat."
-            );
-
-            return;
-
-        }
-
-
-        const form =
-            document.createElement(
-                "form"
-            );
-
-
-        form.method = "POST";
-
-        form.action = "booking.php";
-
-
-        /*
-        |----------------------------------------------------------------------
-        | SHOWTIME
-        |----------------------------------------------------------------------
-        */
-
-        const showtimeInput =
-            document.createElement(
-                "input"
-            );
-
-
-        showtimeInput.type =
-            "hidden";
-
-        showtimeInput.name =
-            "showtime_id";
-
-        showtimeInput.value =
-            "<?= (int)$showtime_id; ?>";
-
-
-        form.appendChild(
-            showtimeInput
         );
 
 
         /*
-        |----------------------------------------------------------------------
-        | SEATS
-        |----------------------------------------------------------------------
+        |--------------------------------------------------------------------------
+        | UPDATE SELECTION
+        |--------------------------------------------------------------------------
         */
 
-        selectedSeats.forEach(
-            function(seat) {
+        function updateSelection() {
 
 
-                const input =
+            /*
+            | Number of selected seats
+            */
+
+            selectedCount.textContent =
+                selectedSeats.length;
+
+
+            /*
+            | Calculate total
+            */
+
+            let total = 0;
+
+
+            selectedSeats.forEach(
+                function (seat) {
+
+                    total +=
+                        parseFloat(
+                            seat.price
+                        ) || 0;
+
+                }
+            );
+
+
+            /*
+            | Display total
+            */
+
+            totalPrice.textContent =
+                total.toFixed(2);
+
+
+            /*
+            | Enable / Disable continue button
+            */
+
+            continueBtn.disabled =
+                selectedSeats.length === 0;
+
+
+        }
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | CONTINUE BUTTON
+        |--------------------------------------------------------------------------
+        */
+
+        continueBtn.addEventListener(
+            "click",
+            function () {
+
+
+                /*
+                | No seat selected
+                */
+
+                if (
+                    selectedSeats.length === 0
+                ) {
+
+                    alert(
+                        "Please select at least one seat."
+                    );
+
+                    return;
+
+                }
+
+
+                /*
+                |--------------------------------------------------------------------------
+                | CREATE FORM
+                |--------------------------------------------------------------------------
+                */
+
+                const form =
+                    document.createElement(
+                        "form"
+                    );
+
+
+                form.method =
+                    "POST";
+
+
+                form.action =
+                    "booking.php";
+
+
+                /*
+                |--------------------------------------------------------------------------
+                | SHOWTIME ID
+                |--------------------------------------------------------------------------
+                */
+
+                const showtimeInput =
                     document.createElement(
                         "input"
                     );
 
 
-                input.type =
+                showtimeInput.type =
                     "hidden";
 
 
-                input.name =
-                    "seat_ids[]";
+                showtimeInput.name =
+                    "showtime_id";
 
 
-                input.value =
-                    seat.id;
+                showtimeInput.value =
+                    "<?=
+                        (int)$showtime_id;
+                    ?>";
 
 
                 form.appendChild(
-                    input
+                    showtimeInput
                 );
+
+
+                /*
+                |--------------------------------------------------------------------------
+                | SELECTED SEAT IDS
+                |--------------------------------------------------------------------------
+                */
+
+                selectedSeats.forEach(
+                    function (seat) {
+
+
+                        const seatInput =
+                            document.createElement(
+                                "input"
+                            );
+
+
+                        seatInput.type =
+                            "hidden";
+
+
+                        seatInput.name =
+                            "seat_ids[]";
+
+
+                        seatInput.value =
+                            seat.id;
+
+
+                        form.appendChild(
+                            seatInput
+                        );
+
+
+                    }
+                );
+
+
+                /*
+                |--------------------------------------------------------------------------
+                | ADD FORM TO PAGE
+                |--------------------------------------------------------------------------
+                */
+
+                document.body.appendChild(
+                    form
+                );
+
+
+                /*
+                |--------------------------------------------------------------------------
+                | SUBMIT TO booking.php
+                |--------------------------------------------------------------------------
+                */
+
+                form.submit();
 
 
             }
         );
 
 
-        document.body.appendChild(
-            form
-        );
-
-
-        form.submit();
-
-
     }
+
 );
 
 </script>
