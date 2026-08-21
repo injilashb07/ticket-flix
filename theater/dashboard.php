@@ -47,6 +47,10 @@ $stmt = $conn->prepare("
     LIMIT 1
 ");
 
+if (!$stmt) {
+    die("Theater query error: " . htmlspecialchars($conn->error));
+}
+
 $stmt->bind_param("i", $theater_id);
 $stmt->execute();
 
@@ -64,13 +68,13 @@ if (!$theater) {
     session_destroy();
 
     header("Location: login.php");
-
     exit();
 }
 
 
 $theater_name =
     $theater['name'] ?? "My Theater";
+
 
 $theater_location =
     $theater['location']
@@ -90,7 +94,6 @@ $stmt = $conn->prepare("
 ");
 
 $stmt->bind_param("i", $theater_id);
-
 $stmt->execute();
 
 $result = $stmt->get_result();
@@ -110,6 +113,7 @@ $total_showtimes = 0;
 
 $stmt = $conn->prepare("
     SELECT COUNT(*) AS total
+
     FROM showtimes st
 
     INNER JOIN screens s
@@ -119,7 +123,6 @@ $stmt = $conn->prepare("
 ");
 
 $stmt->bind_param("i", $theater_id);
-
 $stmt->execute();
 
 $result = $stmt->get_result();
@@ -152,7 +155,6 @@ $stmt = $conn->prepare("
 ");
 
 $stmt->bind_param("i", $theater_id);
-
 $stmt->execute();
 
 $result = $stmt->get_result();
@@ -186,7 +188,6 @@ $stmt = $conn->prepare("
 ");
 
 $stmt->bind_param("i", $theater_id);
-
 $stmt->execute();
 
 $result = $stmt->get_result();
@@ -218,7 +219,6 @@ $stmt = $conn->prepare("
 ");
 
 $stmt->bind_param("i", $theater_id);
-
 $stmt->execute();
 
 $result = $stmt->get_result();
@@ -278,8 +278,11 @@ $stmt = $conn->prepare("
     LIMIT 6
 ");
 
-$stmt->bind_param("i", $theater_id);
+if (!$stmt) {
+    die("Upcoming shows query error: " . htmlspecialchars($conn->error));
+}
 
+$stmt->bind_param("i", $theater_id);
 $stmt->execute();
 
 $result = $stmt->get_result();
@@ -289,6 +292,121 @@ while ($row = $result->fetch_assoc()) {
 }
 
 $stmt->close();
+
+
+/* =========================================================
+   POSTER PATH FUNCTION
+========================================================= */
+
+function getPosterPath($poster)
+{
+    $poster = trim((string) $poster);
+
+    /*
+       Default poster
+    */
+
+    $defaultPoster =
+        "https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?auto=format&fit=crop&w=300&q=80";
+
+
+    /*
+       If database value is empty
+    */
+
+    if ($poster === '') {
+        return $defaultPoster;
+    }
+
+
+    /*
+       If database contains complete URL
+       Example:
+       https://example.com/poster.jpg
+    */
+
+    if (
+        filter_var(
+            $poster,
+            FILTER_VALIDATE_URL
+        )
+    ) {
+        return $poster;
+    }
+
+
+    /*
+       Remove beginning slash
+    */
+
+    $cleanPoster =
+        ltrim($poster, "/\\");
+
+
+    /*
+       Common folders where posters may exist
+    */
+
+    $possiblePaths = [
+
+        "../" . $cleanPoster,
+
+        "../uploads/" . basename($cleanPoster),
+
+        "../uploads/posters/" . basename($cleanPoster),
+
+        "../posters/" . basename($cleanPoster),
+
+        "../images/" . basename($cleanPoster),
+
+        "../images/posters/" . basename($cleanPoster),
+
+        "../assets/" . basename($cleanPoster),
+
+        "../assets/images/" . basename($cleanPoster),
+
+        "../assets/posters/" . basename($cleanPoster),
+
+    ];
+
+
+    /*
+       Check actual file on server
+    */
+
+    foreach ($possiblePaths as $path) {
+
+        $serverPath =
+            __DIR__ . "/" . $path;
+
+        if (file_exists($serverPath)) {
+            return $path;
+        }
+    }
+
+
+    /*
+       If file was not found but database
+       already contains a relative path,
+       try it directly.
+    */
+
+    if (
+        str_starts_with(
+            $cleanPoster,
+            "../"
+        )
+    ) {
+        return $cleanPoster;
+    }
+
+
+    /*
+       Last fallback
+    */
+
+    return $defaultPoster;
+}
 
 ?>
 
@@ -310,11 +428,15 @@ $stmt->close();
 </title>
 
 
+<!-- GOOGLE FONT -->
+
 <link
     href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&display=swap"
     rel="stylesheet"
 >
 
+
+<!-- FONT AWESOME -->
 
 <link
     rel="stylesheet"
@@ -329,26 +451,36 @@ $stmt->close();
 ========================================================= */
 
 * {
+
     margin: 0;
+
     padding: 0;
+
     box-sizing: border-box;
+
 }
+
 
 body {
 
     min-height: 100vh;
 
-    font-family: 'Poppins', sans-serif;
+    font-family:
+        'Poppins',
+        sans-serif;
 
     background:
+
         radial-gradient(
             circle at top right,
             rgba(126,87,194,.25),
             transparent 35%
         ),
+
         #100b18;
 
     color: white;
+
 }
 
 
@@ -365,16 +497,20 @@ body {
     position: fixed;
 
     left: 0;
+
     top: 0;
 
-    background: rgba(18,12,28,.98);
+    background:
+        rgba(18,12,28,.98);
 
     border-right:
-        1px solid rgba(212,175,55,.18);
+        1px solid
+        rgba(212,175,55,.18);
 
     padding: 28px 18px;
 
     z-index: 100;
+
 }
 
 
@@ -387,6 +523,7 @@ body {
     font-weight: 800;
 
     margin-bottom: 8px;
+
 }
 
 
@@ -394,6 +531,7 @@ body {
 .logo span {
 
     color: #d4af37;
+
 }
 
 
@@ -410,6 +548,7 @@ body {
     letter-spacing: 2px;
 
     margin-bottom: 30px;
+
 }
 
 
@@ -423,19 +562,22 @@ body {
         rgba(212,175,55,.08);
 
     border:
-        1px solid rgba(212,175,55,.15);
+        1px solid
+        rgba(212,175,55,.15);
 
     padding: 14px;
 
     border-radius: 14px;
 
     margin-bottom: 25px;
+
 }
 
 
 .theater-box .icon {
 
     width: 40px;
+
     height: 40px;
 
     border-radius: 10px;
@@ -443,6 +585,7 @@ body {
     display: flex;
 
     align-items: center;
+
     justify-content: center;
 
     background:
@@ -451,6 +594,7 @@ body {
     color: #d4af37;
 
     margin-bottom: 9px;
+
 }
 
 
@@ -461,6 +605,7 @@ body {
     font-size: 13px;
 
     color: white;
+
 }
 
 
@@ -473,6 +618,7 @@ body {
     font-size: 10px;
 
     margin-top: 3px;
+
 }
 
 
@@ -501,6 +647,7 @@ body {
     font-size: 13px;
 
     transition: .3s;
+
 }
 
 
@@ -509,6 +656,7 @@ body {
     width: 20px;
 
     text-align: center;
+
 }
 
 
@@ -519,6 +667,7 @@ body {
         rgba(212,175,55,.12);
 
     color: #d4af37;
+
 }
 
 
@@ -529,7 +678,9 @@ body {
     bottom: 25px;
 
     left: 18px;
+
     right: 18px;
+
 }
 
 
@@ -542,6 +693,7 @@ body {
     margin-left: 250px;
 
     padding: 35px;
+
 }
 
 
@@ -558,18 +710,21 @@ body {
     align-items: center;
 
     margin-bottom: 30px;
+
 }
 
 
 .top-header h1 {
 
     font-size: 28px;
+
 }
 
 
 .top-header h1 span {
 
     color: #d4af37;
+
 }
 
 
@@ -580,6 +735,7 @@ body {
     font-size: 13px;
 
     margin-top: 5px;
+
 }
 
 
@@ -590,12 +746,14 @@ body {
     align-items: center;
 
     gap: 10px;
+
 }
 
 
 .user-icon {
 
     width: 42px;
+
     height: 42px;
 
     border-radius: 50%;
@@ -603,6 +761,7 @@ body {
     display: flex;
 
     align-items: center;
+
     justify-content: center;
 
     background:
@@ -613,6 +772,7 @@ body {
         );
 
     color: white;
+
 }
 
 
@@ -623,12 +783,14 @@ body {
     color: #777;
 
     font-size: 10px;
+
 }
 
 
 .user-box strong {
 
     font-size: 12px;
+
 }
 
 
@@ -646,6 +808,7 @@ body {
     gap: 18px;
 
     margin-bottom: 25px;
+
 }
 
 
@@ -655,7 +818,8 @@ body {
         rgba(255,255,255,.05);
 
     border:
-        1px solid rgba(255,255,255,.08);
+        1px solid
+        rgba(255,255,255,.08);
 
     border-radius: 18px;
 
@@ -664,6 +828,7 @@ body {
     position: relative;
 
     overflow: hidden;
+
 }
 
 
@@ -674,21 +839,25 @@ body {
     position: absolute;
 
     width: 80px;
+
     height: 80px;
 
     right: -25px;
+
     bottom: -25px;
 
     border-radius: 50%;
 
     background:
         rgba(212,175,55,.05);
+
 }
 
 
 .stat-icon {
 
     width: 45px;
+
     height: 45px;
 
     border-radius: 12px;
@@ -696,6 +865,7 @@ body {
     display: flex;
 
     align-items: center;
+
     justify-content: center;
 
     background:
@@ -704,6 +874,7 @@ body {
     color: #d4af37;
 
     margin-bottom: 15px;
+
 }
 
 
@@ -712,6 +883,7 @@ body {
     font-size: 25px;
 
     margin-bottom: 3px;
+
 }
 
 
@@ -720,6 +892,7 @@ body {
     color: #888;
 
     font-size: 11px;
+
 }
 
 
@@ -730,18 +903,21 @@ body {
 .section-title {
 
     margin-bottom: 15px;
+
 }
 
 
 .section-title h2 {
 
     font-size: 19px;
+
 }
 
 
 .section-title h2 span {
 
     color: #d4af37;
+
 }
 
 
@@ -755,6 +931,7 @@ body {
     gap: 15px;
 
     margin-bottom: 30px;
+
 }
 
 
@@ -772,21 +949,25 @@ body {
         rgba(255,255,255,.05);
 
     border:
-        1px solid rgba(255,255,255,.08);
+        1px solid
+        rgba(255,255,255,.08);
 
     transition: .3s;
+
 }
 
 
 .quick-card:hover {
 
-    transform: translateY(-4px);
+    transform:
+        translateY(-4px);
 
     border-color:
         rgba(212,175,55,.35);
 
     background:
         rgba(212,175,55,.07);
+
 }
 
 
@@ -797,6 +978,7 @@ body {
     color: #d4af37;
 
     margin-bottom: 12px;
+
 }
 
 
@@ -805,6 +987,7 @@ body {
     font-size: 13px;
 
     margin-bottom: 4px;
+
 }
 
 
@@ -813,6 +996,7 @@ body {
     color: #777;
 
     font-size: 10px;
+
 }
 
 
@@ -824,9 +1008,11 @@ body {
 
     display: grid;
 
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns:
+        1fr 1fr;
 
     gap: 20px;
+
 }
 
 
@@ -836,11 +1022,13 @@ body {
         rgba(255,255,255,.05);
 
     border:
-        1px solid rgba(255,255,255,.08);
+        1px solid
+        rgba(255,255,255,.08);
 
     border-radius: 20px;
 
     padding: 22px;
+
 }
 
 
@@ -853,18 +1041,21 @@ body {
     align-items: center;
 
     margin-bottom: 18px;
+
 }
 
 
 .panel-header h2 {
 
     font-size: 17px;
+
 }
 
 
 .panel-header h2 span {
 
     color: #d4af37;
+
 }
 
 
@@ -875,6 +1066,7 @@ body {
     text-decoration: none;
 
     font-size: 11px;
+
 }
 
 
@@ -888,35 +1080,69 @@ body {
 
     align-items: center;
 
-    gap: 12px;
+    gap: 14px;
 
     padding: 12px 0;
 
+    min-width: 0;
+
     border-bottom:
-        1px solid rgba(255,255,255,.06);
+        1px solid
+        rgba(255,255,255,.06);
+
 }
 
 
 .show-item:last-child {
 
     border-bottom: none;
+
 }
 
+
+/* =========================================================
+   MOVIE POSTER
+========================================================= */
 
 .show-poster {
 
-    width: 45px;
-    height: 60px;
+    width: 55px;
+
+    height: 75px;
+
+    min-width: 55px;
 
     object-fit: cover;
 
-    border-radius: 7px;
+    object-position: center;
+
+    display: block;
+
+    border-radius: 8px;
+
+    background: #24182f;
+
+    border:
+        1px solid
+        rgba(212,175,55,.18);
+
+    box-shadow:
+        0 5px 15px
+        rgba(0,0,0,.25);
+
 }
 
+
+/* =========================================================
+   SHOW DETAILS
+========================================================= */
 
 .show-details {
 
     flex: 1;
+
+    min-width: 0;
+
 }
 
 
@@ -926,7 +1152,12 @@ body {
 
     font-size: 12px;
 
-    margin-bottom: 3px;
+    margin-bottom: 4px;
+
+    line-height: 1.4;
+
+    white-space: normal;
+
 }
 
 
@@ -937,6 +1168,9 @@ body {
     color: #777;
 
     font-size: 10px;
+
+    margin-top: 2px;
+
 }
 
 
@@ -949,8 +1183,15 @@ body {
     font-weight: 600;
 
     text-align: right;
+
+    white-space: nowrap;
+
 }
 
+
+/* =========================================================
+   NO DATA
+========================================================= */
 
 .no-data {
 
@@ -961,6 +1202,7 @@ body {
     color: #777;
 
     font-size: 12px;
+
 }
 
 
@@ -971,6 +1213,7 @@ body {
     color: #d4af37;
 
     margin-bottom: 10px;
+
 }
 
 
@@ -989,24 +1232,31 @@ body {
     padding: 14px 0;
 
     border-bottom:
-        1px solid rgba(255,255,255,.06);
+        1px solid
+        rgba(255,255,255,.06);
+
 }
 
 
 .info-row:last-child {
 
     border-bottom: none;
+
 }
 
 
 .info-icon {
 
     width: 40px;
+
     height: 40px;
+
+    min-width: 40px;
 
     display: flex;
 
     align-items: center;
+
     justify-content: center;
 
     border-radius: 10px;
@@ -1015,6 +1265,7 @@ body {
         rgba(126,87,194,.12);
 
     color: #b58cff;
+
 }
 
 
@@ -1025,6 +1276,7 @@ body {
     color: #777;
 
     font-size: 9px;
+
 }
 
 
@@ -1035,6 +1287,7 @@ body {
     font-size: 12px;
 
     margin-top: 2px;
+
 }
 
 
@@ -1048,13 +1301,16 @@ body {
 
         grid-template-columns:
             repeat(2, 1fr);
+
     }
 
     .quick-grid {
 
         grid-template-columns:
             repeat(2, 1fr);
+
     }
+
 }
 
 
@@ -1065,18 +1321,21 @@ body {
         width: 70px;
 
         padding: 20px 10px;
+
     }
 
 
     .logo {
 
         font-size: 0;
+
     }
 
 
     .logo i {
 
         font-size: 23px;
+
     }
 
 
@@ -1085,19 +1344,23 @@ body {
     .sidebar a span {
 
         display: none;
+
     }
 
 
     .sidebar a {
 
         justify-content: center;
+
     }
 
 
     .logout {
 
         left: 10px;
+
         right: 10px;
+
     }
 
 
@@ -1106,13 +1369,16 @@ body {
         margin-left: 70px;
 
         padding: 20px;
+
     }
 
 
     .content-grid {
 
         grid-template-columns: 1fr;
+
     }
+
 }
 
 
@@ -1122,6 +1388,7 @@ body {
     .quick-grid {
 
         grid-template-columns: 1fr;
+
     }
 
 
@@ -1132,7 +1399,27 @@ body {
         gap: 15px;
 
         flex-direction: column;
+
     }
+
+
+    .show-poster {
+
+        width: 50px;
+
+        height: 68px;
+
+        min-width: 50px;
+
+    }
+
+
+    .show-time {
+
+        font-size: 10px;
+
+    }
+
 }
 
 </style>
@@ -1177,29 +1464,34 @@ body {
 
         <strong>
 
-            <?php
-            echo htmlspecialchars($theater_name);
-            ?>
+            <?= htmlspecialchars(
+                $theater_name
+            ); ?>
 
         </strong>
 
 
         <small>
 
-            <?php
-            echo htmlspecialchars($theater_location);
-            ?>
+            <?= htmlspecialchars(
+                $theater_location
+            ); ?>
 
         </small>
 
     </div>
 
 
-    <a href="dashboard.php" class="active">
+    <a
+        href="dashboard.php"
+        class="active"
+    >
 
         <i class="fa-solid fa-chart-line"></i>
 
-        <span>Dashboard</span>
+        <span>
+            Dashboard
+        </span>
 
     </a>
 
@@ -1208,7 +1500,9 @@ body {
 
         <i class="fa-solid fa-clock"></i>
 
-        <span>Showtimes</span>
+        <span>
+            Showtimes
+        </span>
 
     </a>
 
@@ -1217,7 +1511,9 @@ body {
 
         <i class="fa-solid fa-circle-plus"></i>
 
-        <span>Add Showtime</span>
+        <span>
+            Add Showtime
+        </span>
 
     </a>
 
@@ -1226,7 +1522,9 @@ body {
 
         <i class="fa-solid fa-tv"></i>
 
-        <span>Screens</span>
+        <span>
+            Screens
+        </span>
 
     </a>
 
@@ -1235,7 +1533,9 @@ body {
 
         <i class="fa-solid fa-ticket"></i>
 
-        <span>Bookings</span>
+        <span>
+            Bookings
+        </span>
 
     </a>
 
@@ -1244,16 +1544,23 @@ body {
 
         <i class="fa-solid fa-globe"></i>
 
-        <span>View Website</span>
+        <span>
+            View Website
+        </span>
 
     </a>
 
 
-    <a href="logout.php" class="logout">
+    <a
+        href="logout.php"
+        class="logout"
+    >
 
         <i class="fa-solid fa-right-from-bracket"></i>
 
-        <span>Logout</span>
+        <span>
+            Logout
+        </span>
 
     </a>
 
@@ -1281,9 +1588,9 @@ body {
 
                 <span>
 
-                    <?php
-                    echo htmlspecialchars($theater_user_name);
-                    ?>
+                    <?= htmlspecialchars(
+                        $theater_user_name
+                    ); ?>
 
                 </span>
 
@@ -1322,9 +1629,9 @@ body {
 
                 <strong>
 
-                    <?php
-                    echo htmlspecialchars($theater_name);
-                    ?>
+                    <?= htmlspecialchars(
+                        $theater_name
+                    ); ?>
 
                 </strong>
 
@@ -1353,17 +1660,13 @@ body {
 
             <h3>
 
-                <?php
-                echo $total_screens;
-                ?>
+                <?= $total_screens; ?>
 
             </h3>
 
 
             <p>
-
                 Total Screens
-
             </p>
 
         </div>
@@ -1380,17 +1683,13 @@ body {
 
             <h3>
 
-                <?php
-                echo $total_showtimes;
-                ?>
+                <?= $total_showtimes; ?>
 
             </h3>
 
 
             <p>
-
                 Total Showtimes
-
             </p>
 
         </div>
@@ -1407,17 +1706,13 @@ body {
 
             <h3>
 
-                <?php
-                echo $total_bookings;
-                ?>
+                <?= $total_bookings; ?>
 
             </h3>
 
 
             <p>
-
                 Total Bookings
-
             </p>
 
         </div>
@@ -1434,23 +1729,20 @@ body {
 
             <h3>
 
-                ₹<?php
-                echo number_format(
+                ₹<?= number_format(
                     $total_revenue,
                     2
-                );
-                ?>
+                ); ?>
 
             </h3>
 
 
             <p>
-
                 Total Revenue
-
             </p>
 
         </div>
+
 
     </div>
 
@@ -1463,7 +1755,8 @@ body {
 
         <h2>
 
-            Quick <span>Actions</span>
+            Quick
+            <span>Actions</span>
 
         </h2>
 
@@ -1481,15 +1774,11 @@ body {
             <i class="fa-solid fa-plus"></i>
 
             <h3>
-
                 Add Showtime
-
             </h3>
 
             <p>
-
                 Create a new movie show
-
             </p>
 
         </a>
@@ -1503,15 +1792,11 @@ body {
             <i class="fa-solid fa-clock"></i>
 
             <h3>
-
                 Manage Showtimes
-
             </h3>
 
             <p>
-
                 Edit or remove your shows
-
             </p>
 
         </a>
@@ -1525,15 +1810,11 @@ body {
             <i class="fa-solid fa-tv"></i>
 
             <h3>
-
                 Manage Screens
-
             </h3>
 
             <p>
-
                 View your theater screens
-
             </p>
 
         </a>
@@ -1547,15 +1828,11 @@ body {
             <i class="fa-solid fa-ticket"></i>
 
             <h3>
-
                 View Bookings
-
             </h3>
 
             <p>
-
                 Check customer bookings
-
             </p>
 
         </a>
@@ -1565,13 +1842,15 @@ body {
 
 
     <!-- =====================================================
-         CONTENT
+         CONTENT GRID
     ====================================================== -->
 
     <div class="content-grid">
 
 
-        <!-- UPCOMING SHOWTIMES -->
+        <!-- =================================================
+             UPCOMING SHOWS
+        ================================================== -->
 
         <div class="panel">
 
@@ -1580,7 +1859,8 @@ body {
 
                 <h2>
 
-                    Upcoming <span>Shows</span>
+                    Upcoming
+                    <span>Shows</span>
 
                 </h2>
 
@@ -1597,74 +1877,85 @@ body {
             <?php if (count($upcoming_showtimes) > 0) { ?>
 
 
-                <?php foreach ($upcoming_showtimes as $show) { ?>
+                <?php foreach (
+                    $upcoming_showtimes
+                    as $show
+                ) { ?>
+
+
+                    <?php
+
+                    /*
+                     * GET POSTER
+                     */
+
+                    $show_poster =
+                        getPosterPath(
+                            $show['poster_image']
+                            ?? ''
+                        );
+
+                    ?>
 
 
                     <div class="show-item">
 
 
-                        <?php
-
-                        $show_poster =
-                            !empty($show['poster_image'])
-
-                            ? $show['poster_image']
-
-                            : "https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?auto=format&fit=crop&w=200&q=80";
-
-                        ?>
-
+                        <!-- POSTER -->
 
                         <img
-                            src="<?php
-                            echo htmlspecialchars($show_poster);
-                            ?>"
+                            src="<?= htmlspecialchars(
+                                $show_poster,
+                                ENT_QUOTES,
+                                'UTF-8'
+                            ); ?>"
                             class="show-poster"
-                            alt="Movie"
+                            alt="<?= htmlspecialchars(
+                                $show['movie_name']
+                            ); ?>"
+                            loading="lazy"
+                            onerror="
+                                this.onerror=null;
+                                this.src='https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?auto=format&fit=crop&w=300&q=80';
+                            "
                         >
 
+
+                        <!-- MOVIE DETAILS -->
 
                         <div class="show-details">
 
 
                             <strong>
 
-                                <?php
-
-                                echo htmlspecialchars(
+                                <?= htmlspecialchars(
                                     $show['movie_name']
-                                );
-
-                                ?>
+                                ); ?>
 
                             </strong>
 
 
                             <span>
 
-                                <?php
+                                <i class="fa-solid fa-tv"></i>
 
-                                echo htmlspecialchars(
+                                <?= htmlspecialchars(
                                     $show['screen_name']
-                                );
-
-                                ?>
+                                ); ?>
 
                             </span>
 
 
                             <span>
 
-                                <?php
+                                <i class="fa-solid fa-calendar"></i>
 
-                                echo date(
+                                <?= date(
                                     "d M Y",
                                     strtotime(
                                         $show['show_date']
                                     )
-                                );
-
-                                ?>
+                                ); ?>
 
                             </span>
 
@@ -1672,18 +1963,16 @@ body {
                         </div>
 
 
+                        <!-- SHOW TIME -->
+
                         <div class="show-time">
 
-                            <?php
-
-                            echo date(
+                            <?= date(
                                 "h:i A",
                                 strtotime(
                                     $show['show_time']
                                 )
-                            );
-
-                            ?>
+                            ); ?>
 
                         </div>
 
@@ -1720,7 +2009,9 @@ body {
         </div>
 
 
-        <!-- THEATER INFORMATION -->
+        <!-- =================================================
+             THEATER INFORMATION
+        ================================================== -->
 
         <div class="panel">
 
@@ -1729,12 +2020,15 @@ body {
 
                 <h2>
 
-                    Theater <span>Information</span>
+                    Theater
+                    <span>Information</span>
 
                 </h2>
 
             </div>
 
+
+            <!-- THEATER NAME -->
 
             <div class="info-row">
 
@@ -1751,28 +2045,25 @@ body {
                 <div>
 
                     <small>
-
                         Theater Name
-
                     </small>
 
 
                     <strong>
 
-                        <?php
-
-                        echo htmlspecialchars(
+                        <?= htmlspecialchars(
                             $theater_name
-                        );
-
-                        ?>
+                        ); ?>
 
                     </strong>
 
                 </div>
 
+
             </div>
 
+
+            <!-- LOCATION -->
 
             <div class="info-row">
 
@@ -1789,28 +2080,25 @@ body {
                 <div>
 
                     <small>
-
                         Location
-
                     </small>
 
 
                     <strong>
 
-                        <?php
-
-                        echo htmlspecialchars(
+                        <?= htmlspecialchars(
                             $theater_location
-                        );
-
-                        ?>
+                        ); ?>
 
                     </strong>
 
                 </div>
 
+
             </div>
 
+
+            <!-- TODAY'S SHOWS -->
 
             <div class="info-row">
 
@@ -1827,17 +2115,13 @@ body {
                 <div>
 
                     <small>
-
                         Today's Shows
-
                     </small>
 
 
                     <strong>
 
-                        <?php
-                        echo $today_showtimes;
-                        ?>
+                        <?= $today_showtimes; ?>
 
                         Showtime(s)
 
@@ -1845,8 +2129,11 @@ body {
 
                 </div>
 
+
             </div>
 
+
+            <!-- LOGGED USER -->
 
             <div class="info-row">
 
@@ -1863,25 +2150,20 @@ body {
                 <div>
 
                     <small>
-
                         Logged-in User
-
                     </small>
 
 
                     <strong>
 
-                        <?php
-
-                        echo htmlspecialchars(
+                        <?= htmlspecialchars(
                             $theater_user_name
-                        );
-
-                        ?>
+                        ); ?>
 
                     </strong>
 
                 </div>
+
 
             </div>
 
