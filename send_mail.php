@@ -2,14 +2,36 @@
 
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception;
+use chillerlan\QRCode\QRCode;
+use chillerlan\QRCode\QROptions;
 
-require_once __DIR__ . '/PHPMailer/src/Exception.php';
-require_once __DIR__ . '/PHPMailer/src/PHPMailer.php';
-require_once __DIR__ . '/PHPMailer/src/SMTP.php';
 
+/*
+|--------------------------------------------------------------------------
+| LOAD COMPOSER
+|--------------------------------------------------------------------------
+| Your project should have:
+|
+| Ticket Flix/
+| ├── vendor/
+| ├── payment.php
+| ├── booking.php
+| ├── send_mail.php
+| └── config.php
+|
+*/
+
+require_once __DIR__ . '/vendor/autoload.php';
+
+
+/*
+|--------------------------------------------------------------------------
+| SEND BOOKING CONFIRMATION EMAIL
+|--------------------------------------------------------------------------
+*/
 
 function sendBookingConfirmationEmail(
-    $userEmail,
+    $toEmail,
     $movieName,
     $showDate,
     $showTime,
@@ -17,77 +39,309 @@ function sendBookingConfirmationEmail(
     $screenName,
     $selectedSeats,
     $totalAmount,
-    $bookingReference
+    $bookingReference,
+    $transactionId = ''
 ) {
 
-    $mail = new PHPMailer(true);
+    /*
+    |--------------------------------------------------------------------------
+    | BASIC VALIDATION
+    |--------------------------------------------------------------------------
+    */
+
+    if (
+        empty($toEmail) ||
+        empty($bookingReference)
+    ) {
+        return false;
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | CREATE QR CODE
+    |--------------------------------------------------------------------------
+    |
+    | QR contains the booking number/reference.
+    |
+    | Example:
+    |
+    | TF20260822CD312C5E
+    |
+    */
+
+    $qrData = $bookingReference;
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | QR CODE OPTIONS
+    |--------------------------------------------------------------------------
+    */
+
+    $options = new QROptions();
+
+    /*
+     * PNG output
+     */
+    $options->outputType = 'png';
+
+    /*
+     * QR size
+     */
+    $options->scale = 8;
+
+    /*
+     * Error correction
+     */
+    $options->eccLevel = 'M';
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | CREATE TEMPORARY QR FILE
+    |--------------------------------------------------------------------------
+    */
+
+    $qrFile = sys_get_temp_dir()
+        . DIRECTORY_SEPARATOR
+        . 'ticketflix_qr_'
+        . preg_replace(
+            '/[^A-Za-z0-9_-]/',
+            '',
+            $bookingReference
+        )
+        . '.png';
+
 
     try {
 
-        // SMTP
+        /*
+        |--------------------------------------------------------------------------
+        | GENERATE QR
+        |--------------------------------------------------------------------------
+        */
+
+        $qrCode = new QRCode($options);
+
+        $qrCode->render(
+            $qrData,
+            $qrFile
+        );
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | CHECK QR FILE
+        |--------------------------------------------------------------------------
+        */
+
+        if (
+            !file_exists($qrFile) ||
+            filesize($qrFile) <= 0
+        ) {
+
+            return false;
+
+        }
+
+
+    } catch (Throwable $e) {
+
+        error_log(
+            "TicketFlix QR Error: "
+            . $e->getMessage()
+        );
+
+        return false;
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | CREATE PHPMailer
+    |--------------------------------------------------------------------------
+    */
+
+    $mail = new PHPMailer(true);
+
+
+    try {
+
+        /*
+        |--------------------------------------------------------------------------
+        | SMTP SETTINGS
+        |--------------------------------------------------------------------------
+        */
+
         $mail->isSMTP();
 
         $mail->Host = 'smtp.gmail.com';
 
         $mail->SMTPAuth = true;
 
+        /*
+         * YOUR GMAIL
+         */
         $mail->Username = 'ticketflix40@gmail.com';
 
-        // IMPORTANT:
-        // Yaha apna NEW Gmail App Password daalo
-        $mail->Password = 'wxkz veds hvdt mjhx';
 
-        $mail->SMTPSecure =
-            PHPMailer::ENCRYPTION_STARTTLS;
+        /*
+         * YOUR GMAIL APP PASSWORD
+         *
+         * IMPORTANT:
+         * Use 16-character Gmail App Password.
+         *
+         * Example:
+         *
+         * abcd efgh ijkl mnop
+         *
+         * Remove spaces.
+         */
+
+        $mail->Password = 'whus euir nvbo tbbu';
+
+
+        /*
+         * Encryption
+         */
+
+        $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
 
         $mail->Port = 587;
 
 
-        // Sender
+        /*
+        |--------------------------------------------------------------------------
+        | EMAIL CHARACTER SET
+        |--------------------------------------------------------------------------
+        */
+
+        $mail->CharSet = 'UTF-8';
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | SENDER
+        |--------------------------------------------------------------------------
+        */
+
         $mail->setFrom(
             'ticketflix40@gmail.com',
             'TicketFlix'
         );
 
 
-        // Registered user's email
-        $mail->addAddress($userEmail);
+        /*
+        |--------------------------------------------------------------------------
+        | RECEIVER
+        |--------------------------------------------------------------------------
+        */
+
+        $mail->addAddress(
+            $toEmail
+        );
 
 
-        $mail->isHTML(true);
+        /*
+        |--------------------------------------------------------------------------
+        | REPLY TO
+        |--------------------------------------------------------------------------
+        */
+
+        $mail->addReplyTo(
+            'ticketflix40@gmail.com',
+            'TicketFlix Support'
+        );
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | SUBJECT
+        |--------------------------------------------------------------------------
+        */
 
         $mail->Subject =
-            'Booking Confirmed - ' . $movieName;
+            'TicketFlix Booking Confirmation - '
+            . $bookingReference;
 
 
-        // Seat HTML
-        $seatList = '';
+        /*
+        |--------------------------------------------------------------------------
+        | SEAT LABELS
+        |--------------------------------------------------------------------------
+        */
+
+        $seatLabels = [];
+
 
         foreach ($selectedSeats as $seat) {
 
-            $seatName =
-                $seat['seat_row'] .
-                $seat['seat_number'];
+            if (
+                isset($seat['seat_row']) &&
+                isset($seat['seat_number'])
+            ) {
 
-            $seatList .= '
-                <span style="
-                    display:inline-block;
-                    background:#f4c430;
-                    color:#24102e;
-                    padding:7px 11px;
-                    margin:3px;
-                    border-radius:6px;
-                    font-weight:bold;
-                ">
-                    ' .
-                    htmlspecialchars($seatName) .
-                '
-                </span>
-            ';
+                $seatLabels[] =
+                    $seat['seat_row']
+                    . $seat['seat_number'];
+
+            }
+
         }
 
 
-        // Email body
+        $seatText = !empty($seatLabels)
+            ? implode(', ', $seatLabels)
+            : 'N/A';
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | TRANSACTION ID TEXT
+        |--------------------------------------------------------------------------
+        */
+
+        if (!empty($transactionId)) {
+
+            $transactionHtml = '
+                <tr>
+                    <td style="
+                        padding:10px;
+                        border-bottom:1px solid #eeeeee;
+                        color:#777777;
+                    ">
+                        Transaction ID
+                    </td>
+
+                    <td style="
+                        padding:10px;
+                        border-bottom:1px solid #eeeeee;
+                        font-weight:bold;
+                    ">
+                        ' . htmlspecialchars(
+                            $transactionId
+                        ) . '
+                    </td>
+                </tr>
+            ';
+
+        } else {
+
+            $transactionHtml = '';
+
+        }
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | EMAIL BODY
+        |--------------------------------------------------------------------------
+        */
+
+        $mail->isHTML(true);
+
+
         $mail->Body = '
 
 <!DOCTYPE html>
@@ -98,292 +352,702 @@ function sendBookingConfirmationEmail(
 
 <meta charset="UTF-8">
 
+<title>
+    TicketFlix Booking Confirmation
+</title>
+
 </head>
+
 
 <body style="
     margin:0;
     padding:0;
-    background:#f5f2f8;
+    background:#f4f1f7;
     font-family:Arial,Helvetica,sans-serif;
 ">
 
-<div style="
-    width:90%;
-    max-width:650px;
-    margin:30px auto;
-    background:#ffffff;
-    border-radius:15px;
-    overflow:hidden;
-    box-shadow:0 5px 20px rgba(0,0,0,0.12);
-">
+
+<table
+    width="100%"
+    cellpadding="0"
+    cellspacing="0"
+    style="
+        background:#f4f1f7;
+        padding:30px 10px;
+    "
+>
+
+<tr>
+
+<td align="center">
 
 
-    <!-- HEADER -->
+<table
+    width="600"
+    cellpadding="0"
+    cellspacing="0"
+    style="
+        max-width:600px;
+        width:100%;
+        background:#ffffff;
+        border-radius:15px;
+        overflow:hidden;
+        box-shadow:0 5px 20px rgba(0,0,0,0.10);
+    "
+>
 
-    <div style="
-        background:linear-gradient(135deg,#351650,#1c0e2c);
-        color:white;
+
+<!-- HEADER -->
+
+<tr>
+
+<td
+    style="
+        background:#321452;
+        padding:28px;
         text-align:center;
-        padding:28px 20px;
-    ">
+    "
+>
 
-        <h1 style="margin:0;font-size:30px;">
-            🎬 Ticket<span style="color:#f4c430;">Flix</span>
-        </h1>
+<h1
+    style="
+        margin:0;
+        color:#ffffff;
+        font-size:30px;
+    "
+>
 
-        <p style="color:#d0c8d7;">
-            Movie Ticket Booking
-        </p>
+Ticket<span style="color:#f4c430;">
+Flix
+</span>
 
-    </div>
+</h1>
+
+<p
+    style="
+        margin:8px 0 0;
+        color:#dddddd;
+        font-size:14px;
+    "
+>
+
+Movie Ticket Booking Confirmation
+
+</p>
+
+</td>
+
+</tr>
 
 
-    <!-- CONTENT -->
+<!-- CONTENT -->
 
-    <div style="
+<tr>
+
+<td
+    style="
         padding:30px;
         color:#333333;
-    ">
-
-        <p>Hi,</p>
-
-        <h2 style="color:#5b2c83;">
-            🎉 Your booking is confirmed!
-        </h2>
-
-        <p>
-            Your payment was successful and your
-            movie tickets have been booked successfully.
-        </p>
+    "
+>
 
 
-        <!-- DETAILS -->
+<h2
+    style="
+        color:#321452;
+        margin-top:0;
+    "
+>
 
-        <div style="
-            margin-top:22px;
-            padding:20px;
-            background:#faf7fc;
-            border-left:5px solid #f4c430;
-            border-radius:9px;
-        ">
+🎉 Booking Confirmed!
 
-            <p>
-                <strong style="color:#5b2c83;">
-                    Booking Reference:
-                </strong>
-
-                <strong style="
-                    color:#d4af37;
-                    font-size:19px;
-                ">
-                    ' .
-                    htmlspecialchars($bookingReference) .
-                '
-                </strong>
-            </p>
+</h2>
 
 
-            <p>
-                <strong style="color:#5b2c83;">
-                    Movie:
-                </strong>
+<p
+    style="
+        font-size:15px;
+        line-height:1.6;
+    "
+>
 
-                ' .
-                htmlspecialchars($movieName) .
-                '
-            </p>
+Your TicketFlix movie ticket has been
+successfully booked.
 
-
-            <p>
-                <strong style="color:#5b2c83;">
-                    Theater:
-                </strong>
-
-                ' .
-                htmlspecialchars($theaterName) .
-                '
-            </p>
+</p>
 
 
-            <p>
-                <strong style="color:#5b2c83;">
-                    Screen:
-                </strong>
+<!-- BOOKING NUMBER -->
 
-                ' .
-                htmlspecialchars($screenName) .
-                '
-            </p>
+<table
+    width="100%"
+    cellpadding="0"
+    cellspacing="0"
+    style="
+        background:#f7f1fb;
+        border:1px solid #e3d4ef;
+        border-radius:10px;
+        margin:20px 0;
+    "
+>
 
+<tr>
 
-            <p>
-                <strong style="color:#5b2c83;">
-                    Date:
-                </strong>
-
-                ' .
-                htmlspecialchars($showDate) .
-                '
-            </p>
-
-
-            <p>
-                <strong style="color:#5b2c83;">
-                    Time:
-                </strong>
-
-                ' .
-                htmlspecialchars($showTime) .
-                '
-            </p>
-
-
-            <p>
-                <strong style="color:#5b2c83;">
-                    Selected Seats:
-                </strong>
-            </p>
-
-            ' .
-            $seatList .
-            '
-
-        </div>
-
-
-        <!-- TOTAL -->
-
-        <div style="
-            margin-top:20px;
-            padding:15px;
-            background:#351650;
-            color:white;
-            border-radius:8px;
-            text-align:center;
-        ">
-
-            Total Amount:
-
-            <strong style="
-                color:#f4c430;
-                font-size:22px;
-            ">
-
-                ₹' .
-                number_format(
-                    (float)$totalAmount,
-                    2
-                ) .
-                '
-
-            </strong>
-
-        </div>
-
-
-        <p style="margin-top:25px;">
-            🍿 Enjoy the show!
-        </p>
-
-
-        <p>
-            Thank you for booking with
-            <strong>TicketFlix</strong>.
-        </p>
-
-
-        <p>
-            — TicketFlix Team
-        </p>
-
-    </div>
-
-
-    <!-- FOOTER -->
-
-    <div style="
-        background:#f1edf5;
-        padding:20px;
+<td
+    style="
+        padding:18px;
         text-align:center;
-        color:#666666;
-        font-size:13px;
-    ">
+    "
+>
 
-        This is an automated confirmation email.
-        Please do not reply to this email.
+<div
+    style="
+        color:#777777;
+        font-size:12px;
+        margin-bottom:7px;
+    "
+>
 
-    </div>
+BOOKING NUMBER
 
 </div>
+
+
+<div
+    style="
+        color:#321452;
+        font-size:24px;
+        font-weight:bold;
+        letter-spacing:2px;
+    "
+>
+
+' . htmlspecialchars(
+    $bookingReference
+) . '
+
+</div>
+
+</td>
+
+</tr>
+
+</table>
+
+
+<!-- DETAILS -->
+
+<table
+    width="100%"
+    cellpadding="0"
+    cellspacing="0"
+    style="
+        border-collapse:collapse;
+        font-size:14px;
+    "
+>
+
+
+<tr>
+
+<td
+    style="
+        padding:10px;
+        border-bottom:1px solid #eeeeee;
+        color:#777777;
+    "
+>
+
+Movie
+
+</td>
+
+<td
+    style="
+        padding:10px;
+        border-bottom:1px solid #eeeeee;
+        font-weight:bold;
+    "
+>
+
+' . htmlspecialchars(
+    $movieName
+) . '
+
+</td>
+
+</tr>
+
+
+<tr>
+
+<td
+    style="
+        padding:10px;
+        border-bottom:1px solid #eeeeee;
+        color:#777777;
+    "
+>
+
+Theater
+
+</td>
+
+<td
+    style="
+        padding:10px;
+        border-bottom:1px solid #eeeeee;
+        font-weight:bold;
+    "
+>
+
+' . htmlspecialchars(
+    $theaterName
+) . '
+
+</td>
+
+</tr>
+
+
+<tr>
+
+<td
+    style="
+        padding:10px;
+        border-bottom:1px solid #eeeeee;
+        color:#777777;
+    "
+>
+
+Screen
+
+</td>
+
+<td
+    style="
+        padding:10px;
+        border-bottom:1px solid #eeeeee;
+        font-weight:bold;
+    "
+>
+
+' . htmlspecialchars(
+    $screenName
+) . '
+
+</td>
+
+</tr>
+
+
+<tr>
+
+<td
+    style="
+        padding:10px;
+        border-bottom:1px solid #eeeeee;
+        color:#777777;
+    "
+>
+
+Date
+
+</td>
+
+<td
+    style="
+        padding:10px;
+        border-bottom:1px solid #eeeeee;
+        font-weight:bold;
+    "
+>
+
+' . htmlspecialchars(
+    $showDate
+) . '
+
+</td>
+
+</tr>
+
+
+<tr>
+
+<td
+    style="
+        padding:10px;
+        border-bottom:1px solid #eeeeee;
+        color:#777777;
+    "
+>
+
+Time
+
+</td>
+
+<td
+    style="
+        padding:10px;
+        border-bottom:1px solid #eeeeee;
+        font-weight:bold;
+    "
+>
+
+' . htmlspecialchars(
+    $showTime
+) . '
+
+</td>
+
+</tr>
+
+
+<tr>
+
+<td
+    style="
+        padding:10px;
+        border-bottom:1px solid #eeeeee;
+        color:#777777;
+    "
+>
+
+Seats
+
+</td>
+
+<td
+    style="
+        padding:10px;
+        border-bottom:1px solid #eeeeee;
+        font-weight:bold;
+    "
+>
+
+' . htmlspecialchars(
+    $seatText
+) . '
+
+</td>
+
+</tr>
+
+
+' . $transactionHtml . '
+
+
+<tr>
+
+<td
+    style="
+        padding:12px 10px;
+        color:#777777;
+    "
+>
+
+Total Paid
+
+</td>
+
+<td
+    style="
+        padding:12px 10px;
+        color:#321452;
+        font-size:18px;
+        font-weight:bold;
+    "
+>
+
+₹' . number_format(
+    (float)$totalAmount,
+    2
+) . '
+
+</td>
+
+</tr>
+
+
+</table>
+
+
+<!-- QR -->
+
+<div
+    style="
+        margin-top:30px;
+        text-align:center;
+        padding:20px;
+        background:#fafafa;
+        border-radius:12px;
+    "
+>
+
+<h3
+    style="
+        margin-top:0;
+        color:#321452;
+    "
+>
+
+🎟️ Your Booking QR Code
+
+</h3>
+
+
+<p
+    style="
+        color:#777777;
+        font-size:13px;
+    "
+>
+
+Show this QR code at the theater.
+
+</p>
+
+
+<img
+    src="cid:ticketflixqr"
+    alt="TicketFlix Booking QR Code"
+    width="220"
+    style="
+        display:block;
+        margin:15px auto;
+        border:8px solid #ffffff;
+    "
+>
+
+
+<p
+    style="
+        color:#321452;
+        font-weight:bold;
+        margin-bottom:0;
+    "
+>
+
+' . htmlspecialchars(
+    $bookingReference
+) . '
+
+</p>
+
+</div>
+
+
+<!-- FOOTER -->
+
+<p
+    style="
+        margin-top:30px;
+        color:#777777;
+        font-size:13px;
+        line-height:1.6;
+    "
+>
+
+Thank you for booking with
+<strong>TicketFlix</strong> 🎬🍿
+
+<br>
+
+Please keep this email and QR code safe
+until you enter the theater.
+
+</p>
+
+
+</td>
+
+</tr>
+
+
+<!-- FOOTER -->
+
+<tr>
+
+<td
+    style="
+        background:#321452;
+        padding:18px;
+        text-align:center;
+        color:#dddddd;
+        font-size:12px;
+    "
+>
+
+© ' . date('Y') . ' TicketFlix.
+All rights reserved.
+
+</td>
+
+</tr>
+
+
+</table>
+
+</td>
+
+</tr>
+
+</table>
+
 
 </body>
 
 </html>
-
 ';
 
 
-        // Plain text version
-        $plainSeats = '';
+        /*
+        |--------------------------------------------------------------------------
+        | ALT TEXT
+        |--------------------------------------------------------------------------
+        */
 
-        foreach ($selectedSeats as $seat) {
+        $mail->AltBody =
+            "TicketFlix Booking Confirmation\n\n"
+            . "Booking Number: "
+            . $bookingReference
+            . "\n"
+            . "Movie: "
+            . $movieName
+            . "\n"
+            . "Theater: "
+            . $theaterName
+            . "\n"
+            . "Screen: "
+            . $screenName
+            . "\n"
+            . "Date: "
+            . $showDate
+            . "\n"
+            . "Time: "
+            . $showTime
+            . "\n"
+            . "Seats: "
+            . $seatText
+            . "\n"
+            . "Total Paid: ₹"
+            . number_format(
+                (float)$totalAmount,
+                2
+            );
 
-            $plainSeats .=
-                $seat['seat_row'] .
-                $seat['seat_number'] .
-                ' ';
+
+        /*
+        |--------------------------------------------------------------------------
+        | ATTACH QR CODE
+        |--------------------------------------------------------------------------
+        |
+        | cid:ticketflixqr
+        | is used by the HTML email to display
+        | the QR image.
+        |
+        */
+
+        $mail->addEmbeddedImage(
+            $qrFile,
+            'ticketflixqr',
+            'ticketflix-booking-qr.png',
+            'base64',
+            'image/png'
+        );
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | ALSO ATTACH QR AS DOWNLOADABLE FILE
+        |--------------------------------------------------------------------------
+        */
+
+        $mail->addAttachment(
+            $qrFile,
+            'TicketFlix-' . $bookingReference . '-QR.png'
+        );
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | SEND EMAIL
+        |--------------------------------------------------------------------------
+        */
+
+        $mail->send();
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | DELETE TEMPORARY QR FILE
+        |--------------------------------------------------------------------------
+        */
+
+        if (file_exists($qrFile)) {
+
+            unlink($qrFile);
+
         }
 
 
-        $mail->AltBody =
-            "TicketFlix Booking Confirmation\n\n" .
-
-            "Your booking is confirmed!\n\n" .
-
-            "Booking Reference: " .
-            $bookingReference . "\n" .
-
-            "Movie: " .
-            $movieName . "\n" .
-
-            "Theater: " .
-            $theaterName . "\n" .
-
-            "Screen: " .
-            $screenName . "\n" .
-
-            "Date: " .
-            $showDate . "\n" .
-
-            "Time: " .
-            $showTime . "\n" .
-
-            "Seats: " .
-            $plainSeats . "\n" .
-
-            "Total Amount: ₹" .
-            number_format(
-                (float)$totalAmount,
-                2
-            ) . "\n\n" .
-
-            "Enjoy the show!\n\n" .
-
-            "Thank you for booking with TicketFlix.";
-
-
-        // SEND
-        $mail->send();
+        /*
+        |--------------------------------------------------------------------------
+        | SUCCESS
+        |--------------------------------------------------------------------------
+        */
 
         return true;
 
+
     } catch (Exception $e) {
 
+        /*
+        |--------------------------------------------------------------------------
+        | DELETE TEMP QR IF MAIL FAILED
+        |--------------------------------------------------------------------------
+        */
+
+        if (file_exists($qrFile)) {
+
+            unlink($qrFile);
+
+        }
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | SAVE ERROR TO PHP ERROR LOG
+        |--------------------------------------------------------------------------
+        */
+
         error_log(
-            "TicketFlix Mail Error: " .
-            $mail->ErrorInfo
+            "TicketFlix Mail Error: "
+            . $mail->ErrorInfo
         );
 
+
         return false;
+
+    } catch (Throwable $e) {
+
+        if (file_exists($qrFile)) {
+
+            unlink($qrFile);
+
+        }
+
+
+        error_log(
+            "TicketFlix General Mail Error: "
+            . $e->getMessage()
+        );
+
+
+        return false;
+
     }
+
 }
+
+?>

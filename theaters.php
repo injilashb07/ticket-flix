@@ -86,16 +86,23 @@ $result = mysqli_query($conn, $sql);
         }
 
         .theater-image {
-            height: 170px;
-            background:
-                linear-gradient(rgba(35,13,55,0.25), rgba(35,13,55,0.7)),
-                url('images/theater.jpg');
-            background-size: cover;
-            background-position: center;
-            display: flex;
-            align-items: flex-end;
-            padding: 20px;
-        }
+    width: 100%;
+    height: 200px;
+    overflow: hidden;
+    background: #241337;
+}
+
+.theater-image img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+    transition: transform 0.4s ease;
+}
+
+.theater-card:hover .theater-image img {
+    transform: scale(1.05);
+}
 
         .theater-icon {
             font-size: 42px;
@@ -191,9 +198,51 @@ $result = mysqli_query($conn, $sql);
                         );
                      ?>">
 
-                    <div class="theater-image">
-                        <div class="theater-icon">🎥</div>
-                    </div>
+                    <?php
+
+$theaterImages = [
+
+    'Downtown Regal' =>
+        'theater_img/downtown regal.jpg',
+
+    'Grand Cinemas' =>
+        'theater_img/grandcinemas.jpg',
+
+    'Harbor View Cinema' =>
+        'theater_img/harbor.jpeg',
+
+    'Magnolia Theater' =>
+        'theater_img/Magnolia.jpg',
+
+    'Maplewood 8' =>
+        'theater_img/maplewood.webp',
+
+    'Metroplex Mall Theatre' =>
+        'theater_img/metroplex.webp',
+
+    'Sunset Boulevard Cinema' =>
+        'theater_img/sunset.jpg',
+
+    'Westfield Cineplex' =>
+        'theater_img/westfield.jpeg'
+];
+
+$theaterName = $theater['name'];
+
+$theaterImage =
+    $theaterImages[$theaterName]
+    ?? 'theater_img/default.jpg';
+
+?>
+
+<div class="theater-image">
+
+    <img
+        src="<?php echo htmlspecialchars($theaterImage); ?>"
+        alt="<?php echo htmlspecialchars($theaterName); ?>"
+    >
+
+</div>
 
                     <div class="theater-content">
 
