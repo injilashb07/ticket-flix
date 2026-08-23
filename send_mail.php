@@ -199,7 +199,7 @@ function sendBookingConfirmationEmail(
          * Remove spaces.
          */
 
-        $mail->Password = 'whus euir nvbo tbbu';
+        $mail->Password = 'wown jbjf neoc bbbp';
 
 
         /*
