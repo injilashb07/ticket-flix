@@ -4,54 +4,18 @@ session_start();
 
 require_once __DIR__ . "/config.php";
 
-/*
-|--------------------------------------------------------------------------
-| COMPOSER AUTOLOAD
-|--------------------------------------------------------------------------
-| Make sure this file exists:
-|
-| Ticket Flix/
-| ├── vendor/
-| │   └── autoload.php
-| ├── payment.php
-| ├── config.php
-| └── ...
-|
-*/
-$autoload = __DIR__ . "/vendor/autoload.php";
-
-if (!file_exists($autoload)) {
-    die("
-        <h2 style='color:red;text-align:center;margin-top:100px;'>
-            Composer vendor/autoload.php not found
-        </h2>
-        <p style='text-align:center;'>
-            Run <b>composer install</b> or <b>composer require chillerlan/php-qrcode phpmailer/phpmailer</b>
-        </p>
-    ");
-}
-
-require_once $autoload;
-
-
-/*
-|--------------------------------------------------------------------------
-| PHPMailer
-|--------------------------------------------------------------------------
-*/
+/* =========================================================
+   PHPMailer
+========================================================= */
 
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception;
 
+$phpmailerPath = __DIR__ . "/PHPMailer/src";
 
-/*
-|--------------------------------------------------------------------------
-| chillerlan QR Code
-|--------------------------------------------------------------------------
-*/
-
-use chillerlan\QRCode\QRCode;
-use chillerlan\QRCode\QROptions;
+require_once $phpmailerPath . "/Exception.php";
+require_once $phpmailerPath . "/PHPMailer.php";
+require_once $phpmailerPath . "/SMTP.php";
 
 
 /* =========================================================
@@ -59,50 +23,49 @@ use chillerlan\QRCode\QROptions;
 ========================================================= */
 
 if (!isset($_SESSION['user_id'])) {
-
-    header("Location: login.php");
-    exit();
-
+    die("Please login first.");
 }
 
-$user_id = (int)$_SESSION['user_id'];
+$user_id = (int) $_SESSION['user_id'];
 
 
 /* =========================================================
-   ONLY POST REQUEST
+   DATABASE CHECK
 ========================================================= */
 
-if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-
-    header("Location: index.php");
-    exit();
-
+if (!isset($conn) || !$conn) {
+    die("Database connection failed.");
 }
 
 
 /* =========================================================
-   GET FORM DATA
+   GET PAYMENT DATA
 ========================================================= */
 
 $showtime_id = isset($_POST['showtime_id'])
-    ? (int)$_POST['showtime_id']
+    ? (int) $_POST['showtime_id']
     : 0;
 
 $seat_ids = $_POST['seat_ids'] ?? [];
 
-$payment_method = isset($_POST['payment_method'])
-    ? trim($_POST['payment_method'])
-    : '';
+$payment_method = $_POST['payment_method'] ?? 'card';
 
 
 /* =========================================================
-   CLEAN SEAT IDS
+   VALIDATE SHOWTIME
+========================================================= */
+
+if ($showtime_id <= 0) {
+    die("Invalid showtime.");
+}
+
+
+/* =========================================================
+   HANDLE SEAT IDS
 ========================================================= */
 
 if (!is_array($seat_ids)) {
-
     $seat_ids = explode(',', $seat_ids);
-
 }
 
 $seat_ids = array_map('intval', $seat_ids);
@@ -118,55 +81,26 @@ $seat_ids = array_values(
     array_unique($seat_ids)
 );
 
+if (empty($seat_ids)) {
+    die("No seats selected.");
+}
+
 
 /* =========================================================
-   BASIC VALIDATION
+   PAYMENT METHOD LABEL
 ========================================================= */
 
-if (
-    $showtime_id <= 0 ||
-    empty($seat_ids) ||
-    $payment_method === ''
-) {
+$payment_methods = [
+    'card'       => 'Card',
+    'upi'        => 'UPI',
+    'netbanking' => 'Net Banking'
+];
 
-    die("
-        <div style='
-            font-family:Arial;
-            text-align:center;
-            padding:60px;
-            background:#100b18;
-            color:white;
-            min-height:100vh;
-        '>
-
-            <h2 style='color:#ff7777;'>
-                Payment Error
-            </h2>
-
-            <p>
-                Showtime, seats or payment method is missing.
-            </p>
-
-            <br>
-
-            <a
-                href='javascript:history.back()'
-                style='
-                    background:#f4c430;
-                    color:#21102f;
-                    padding:12px 25px;
-                    border-radius:8px;
-                    text-decoration:none;
-                    font-weight:bold;
-                '
-            >
-                ← Go Back
-            </a>
-
-        </div>
-    ");
-
+if (!isset($payment_methods[$payment_method])) {
+    $payment_method = 'card';
 }
+
+$payment_method_name = $payment_methods[$payment_method];
 
 
 /* =========================================================
@@ -176,20 +110,16 @@ if (
 $user_stmt = $conn->prepare("
     SELECT
         id,
-        name,
-        email
+        email,
+        first_name,
+        last_name
     FROM users
     WHERE id = ?
     LIMIT 1
 ");
 
 if (!$user_stmt) {
-
-    die(
-        "User query error: " .
-        htmlspecialchars($conn->error)
-    );
-
+    die("User query error: " . htmlspecialchars($conn->error));
 }
 
 $user_stmt->bind_param(
@@ -198,12 +128,7 @@ $user_stmt->bind_param(
 );
 
 if (!$user_stmt->execute()) {
-
-    die(
-        "User query execution error: " .
-        htmlspecialchars($user_stmt->error)
-    );
-
+    die("User query failed: " . htmlspecialchars($user_stmt->error));
 }
 
 $user_result = $user_stmt->get_result();
@@ -212,47 +137,29 @@ $user = $user_result->fetch_assoc();
 
 $user_stmt->close();
 
+if (!$user) {
+    die("User not found.");
+}
 
-if (!$user || empty($user['email'])) {
 
-    die("
-        <div style='
-            font-family:Arial;
-            text-align:center;
-            padding:60px;
-            background:#100b18;
-            color:white;
-            min-height:100vh;
-        '>
+$user_name = trim(
+    ($user['first_name'] ?? '') . " " .
+    ($user['last_name'] ?? '')
+);
 
-            <h2 style='color:#ff7777;'>
-                User Email Not Found
-            </h2>
-
-            <p>
-                Registered user's email address could not be found.
-            </p>
-
-        </div>
-    ");
-
+if ($user_name === '') {
+    $user_name = "TicketFlix User";
 }
 
 $user_email = trim($user['email']);
 
-$user_name = !empty($user['name'])
-    ? trim($user['name'])
-    : 'TicketFlix User';
-
 
 /* =========================================================
-   GET SHOWTIME DETAILS
+   GET SHOWTIME + MOVIE + SCREEN + THEATER
 ========================================================= */
 
-$stmt = $conn->prepare("
-
+$showtime_stmt = $conn->prepare("
     SELECT
-
         st.id AS showtime_id,
         st.movie_id,
         st.screen_id,
@@ -261,6 +168,7 @@ $stmt = $conn->prepare("
         st.price,
 
         m.name AS movie_name,
+        m.poster_image,
 
         s.screen_name,
 
@@ -283,68 +191,62 @@ $stmt = $conn->prepare("
     WHERE st.id = ?
 
     LIMIT 1
-
 ");
 
-
-if (!$stmt) {
-
+if (!$showtime_stmt) {
     die(
         "Showtime query error: " .
         htmlspecialchars($conn->error)
     );
-
 }
 
-
-$stmt->bind_param(
+$showtime_stmt->bind_param(
     "i",
     $showtime_id
 );
 
-
-if (!$stmt->execute()) {
-
+if (!$showtime_stmt->execute()) {
     die(
-        "Showtime query execution error: " .
-        htmlspecialchars($stmt->error)
+        "Showtime query failed: " .
+        htmlspecialchars($showtime_stmt->error)
     );
-
 }
 
+$showtime_result = $showtime_stmt->get_result();
 
-$result = $stmt->get_result();
+$showtime = $showtime_result->fetch_assoc();
 
-$showtime = $result->fetch_assoc();
-
-$stmt->close();
+$showtime_stmt->close();
 
 
 if (!$showtime) {
-
-    die("
-        <div style='
-            font-family:Arial;
-            text-align:center;
-            padding:60px;
-            background:#100b18;
-            color:white;
-            min-height:100vh;
-        '>
-
-            <h2 style='color:#ff7777;'>
-                Showtime Not Found
-            </h2>
-
-            <p>
-                Showtime ID:
-                " . htmlspecialchars($showtime_id) . "
-            </p>
-
-        </div>
-    ");
-
+    die("Showtime not found.");
 }
+
+
+/* =========================================================
+   SHOWTIME DATA
+========================================================= */
+
+$screen_id = (int) $showtime['screen_id'];
+
+$movie_name = $showtime['movie_name'];
+
+$screen_name = $showtime['screen_name'];
+
+$theater_name = $showtime['theater_name'];
+
+$theater_city = $showtime['city'];
+
+$theater_state = $showtime['state'];
+
+$theater_address = $showtime['address'];
+
+$show_date = $showtime['show_date'];
+
+$show_time = $showtime['show_time'];
+
+$ticket_price = (float) $showtime['price'];
 
 
 /* =========================================================
@@ -360,75 +262,61 @@ $placeholders = implode(
     )
 );
 
-$types = str_repeat(
-    'i',
-    count($seat_ids)
-);
 
-
-$sql = "
-
+$seat_sql = "
     SELECT
-
         id,
         screen_id,
         seat_row,
         seat_number,
         seat_type,
         is_active
-
     FROM seats
-
     WHERE id IN ($placeholders)
-
     AND screen_id = ?
-
     AND is_active = 1
-
     ORDER BY
         seat_row ASC,
         seat_number ASC
-
 ";
 
 
-$stmt = $conn->prepare($sql);
+$seat_stmt = $conn->prepare($seat_sql);
 
-
-if (!$stmt) {
-
+if (!$seat_stmt) {
     die(
         "Seat query error: " .
         htmlspecialchars($conn->error)
     );
-
 }
 
 
-$params = $seat_ids;
+$seat_params = $seat_ids;
 
-$params[] = (int)$showtime['screen_id'];
+$seat_params[] = $screen_id;
 
-$final_types = $types . "i";
+$seat_types =
+    str_repeat(
+        'i',
+        count($seat_ids)
+    ) . 'i';
 
 
-$stmt->bind_param(
-    $final_types,
-    ...$params
+$seat_stmt->bind_param(
+    $seat_types,
+    ...$seat_params
 );
 
 
-if (!$stmt->execute()) {
-
+if (!$seat_stmt->execute()) {
     die(
-        "Seat query execution error: " .
-        htmlspecialchars($stmt->error)
+        "Seat query failed: " .
+        htmlspecialchars($seat_stmt->error)
     );
-
 }
 
 
-$seat_result = $stmt->get_result();
+$seat_result = $seat_stmt->get_result();
 
 $selected_seats = [];
 
@@ -439,63 +327,34 @@ while ($seat = $seat_result->fetch_assoc()) {
 
 }
 
-
-$stmt->close();
+$seat_stmt->close();
 
 
 /* =========================================================
-   VALIDATE SEATS
+   VALIDATE ALL SEATS
 ========================================================= */
 
 if (
-    count($selected_seats) !== count($seat_ids)
+    count($selected_seats)
+    !==
+    count($seat_ids)
 ) {
 
-    die("
-        <div style='
-            font-family:Arial;
-            text-align:center;
-            padding:60px;
-            background:#100b18;
-            color:white;
-            min-height:100vh;
-        '>
-
-            <h2 style='color:#ff7777;'>
-                Invalid Seats
-            </h2>
-
-            <p>
-                One or more selected seats are invalid.
-            </p>
-
-            <br>
-
-            <a
-                href='javascript:history.back()'
-                style='
-                    background:#f4c430;
-                    color:#21102f;
-                    padding:12px 25px;
-                    border-radius:8px;
-                    text-decoration:none;
-                    font-weight:bold;
-                '
-            >
-                ← Select Seats Again
-            </a>
-
-        </div>
-    ");
+    die(
+        "One or more selected seats are invalid."
+    );
 
 }
 
 
 /* =========================================================
-   CREATE SEAT LABELS
+   SEAT LIST
 ========================================================= */
 
 $seat_labels = [];
+
+$seat_numbers = [];
+
 
 foreach ($selected_seats as $seat) {
 
@@ -503,231 +362,55 @@ foreach ($selected_seats as $seat) {
         $seat['seat_row'] .
         $seat['seat_number'];
 
+    $seat_numbers[] =
+        $seat['seat_row'] .
+        $seat['seat_number'];
 }
+
+
+$seat_list = implode(
+    ", ",
+    $seat_numbers
+);
 
 
 /* =========================================================
-   CHECK ALREADY BOOKED SEATS
-========================================================= */
-
-$check_placeholders = implode(
-    ',',
-    array_fill(
-        0,
-        count($seat_ids),
-        '?'
-    )
-);
-
-$check_types = str_repeat(
-    'i',
-    count($seat_ids)
-);
-
-
-$check_sql = "
-
-    SELECT bs.seat_id
-
-    FROM booking_seats bs
-
-    INNER JOIN bookings b
-        ON b.id = bs.booking_id
-
-    WHERE b.showtime_id = ?
-
-    AND bs.seat_id IN ($check_placeholders)
-
-    AND (
-        b.booking_status = 'pending'
-        OR
-        b.booking_status = 'confirmed'
-    )
-
-    LIMIT 1
-
-";
-
-
-$check_stmt = $conn->prepare($check_sql);
-
-
-if (!$check_stmt) {
-
-    die(
-        "Booking check error: " .
-        htmlspecialchars($conn->error)
-    );
-
-}
-
-
-$check_params = array_merge(
-    [$showtime_id],
-    $seat_ids
-);
-
-$check_final_types =
-    'i' . $check_types;
-
-
-$check_stmt->bind_param(
-    $check_final_types,
-    ...$check_params
-);
-
-
-if (!$check_stmt->execute()) {
-
-    die(
-        "Booking check execution error: " .
-        htmlspecialchars($check_stmt->error)
-    );
-
-}
-
-
-$check_result =
-    $check_stmt->get_result();
-
-
-if ($check_result->num_rows > 0) {
-
-    $check_stmt->close();
-
-    die("
-        <div style='
-            font-family:Arial;
-            text-align:center;
-            padding:60px;
-            background:#100b18;
-            color:white;
-            min-height:100vh;
-        '>
-
-            <h2 style='color:#ff7777;'>
-                Seat Already Booked
-            </h2>
-
-            <p>
-                One or more selected seats have already been booked.
-            </p>
-
-            <br>
-
-            <a
-                href='javascript:history.back()'
-                style='
-                    background:#f4c430;
-                    color:#21102f;
-                    padding:12px 25px;
-                    border-radius:8px;
-                    text-decoration:none;
-                    font-weight:bold;
-                '
-            >
-                ← Select Different Seats
-            </a>
-
-        </div>
-    ");
-
-}
-
-
-$check_stmt->close();
-
-
-/* =========================================================
-   CALCULATE TOTAL
-========================================================= */
-
-$ticket_price =
-    (float)$showtime['price'];
-
-$seat_count =
-    count($selected_seats);
-
-$subtotal =
-    $ticket_price * $seat_count;
-
-$booking_fee = 0;
-
-$total_amount =
-    $subtotal + $booking_fee;
-
-
-/* =========================================================
-   GENERATE BOOKING NUMBER
+   CALCULATE PAYMENT AMOUNT
 ========================================================= */
 
 /*
-|--------------------------------------------------------------------------
-| Example:
-|
-| 20260822153745123
-|
-| Starts with current year 2026.
-|
+   IMPORTANT:
+
+   We DO NOT trust total_amount coming from POST.
+
+   Amount is calculated directly from:
+   showtime price × number of seats
 */
 
-$booking_number =
-    date('YmdHis')
-    . str_pad(
-        (string)random_int(0, 999),
-        3,
-        '0',
-        STR_PAD_LEFT
-    );
+$seat_count = count($selected_seats);
+
+$subtotal =
+    $ticket_price *
+    $seat_count;
+
+$booking_fee = 0.00;
+
+$total_amount =
+    $subtotal +
+    $booking_fee;
 
 
 /* =========================================================
-   GENERATE BOOKING REFERENCE
+   VALIDATE PAYMENT AMOUNT
 ========================================================= */
 
-$booking_reference =
-    'TF'
-    . date('Ymd')
-    . strtoupper(
-        substr(
-            bin2hex(
-                random_bytes(4)
-            ),
-            0,
-            8
-        )
-    );
+if ($total_amount <= 0) {
+    die("Invalid payment amount.");
+}
 
 
 /* =========================================================
-   GENERATE TRANSACTION ID
-========================================================= */
-
-$transaction_id =
-    'TXN'
-    . date('YmdHis')
-    . strtoupper(
-        substr(
-            bin2hex(
-                random_bytes(5)
-            ),
-            0,
-            10
-        )
-    );
-
-
-/* =========================================================
-   PAYMENT STATUS
-========================================================= */
-
-$payment_status = 'completed';
-
-$booking_status = 'confirmed';
-
-
-/* =========================================================
-   DATABASE TRANSACTION
+   START TRANSACTION
 ========================================================= */
 
 $conn->begin_transaction();
@@ -735,61 +418,153 @@ $conn->begin_transaction();
 
 try {
 
-
     /* =====================================================
-       INSERT INTO BOOKINGS
+       CHECK ALREADY BOOKED SEATS
     ===================================================== */
 
-    /*
-    IMPORTANT:
+    $conflict_sql = "
+        SELECT
+            bs.seat_id
 
-    Your bookings table contains:
+        FROM booking_seats bs
 
-    booking_number
-    booking_reference
-    user_id
-    showtime_id
-    total_amount
-    booking_status
+        INNER JOIN bookings b
+            ON bs.booking_id = b.id
 
-    */
+        WHERE b.showtime_id = ?
 
-    $booking_sql = "
+        AND bs.seat_id IN ($placeholders)
 
+        AND (
+            b.booking_status = 'pending'
+            OR
+            b.booking_status = 'confirmed'
+        )
+
+        LIMIT 1
+    ";
+
+
+    $conflict_stmt =
+        $conn->prepare($conflict_sql);
+
+
+    if (!$conflict_stmt) {
+
+        throw new Exception(
+            "Seat conflict query failed: " .
+            $conn->error
+        );
+
+    }
+
+
+    $conflict_values =
+        array_merge(
+            [$showtime_id],
+            $seat_ids
+        );
+
+
+    $conflict_types =
+        'i' .
+        str_repeat(
+            'i',
+            count($seat_ids)
+        );
+
+
+    $conflict_stmt->bind_param(
+        $conflict_types,
+        ...$conflict_values
+    );
+
+
+    if (!$conflict_stmt->execute()) {
+
+        throw new Exception(
+            "Seat availability check failed: " .
+            $conflict_stmt->error
+        );
+
+    }
+
+
+    $conflict_result =
+        $conflict_stmt->get_result();
+
+
+    if ($conflict_result->num_rows > 0) {
+
+        $conflict_stmt->close();
+
+        throw new Exception(
+            "One or more selected seats are already booked."
+        );
+
+    }
+
+
+    $conflict_stmt->close();
+
+
+    /* =====================================================
+       GENERATE BOOKING NUMBER
+    ===================================================== */
+
+    $booking_number =
+        date('Ymd') .
+        rand(100000, 999999);
+
+
+    /* =====================================================
+       GENERATE BOOKING REFERENCE
+    ===================================================== */
+
+    $booking_reference =
+        "TF" .
+        date("Ymd") .
+        strtoupper(
+            substr(
+                bin2hex(
+                    random_bytes(5)
+                ),
+                0,
+                8
+            )
+        );
+
+
+    /* =====================================================
+       BOOKING STATUS
+    ===================================================== */
+
+    $booking_status = "confirmed";
+
+
+    /* =====================================================
+       INSERT BOOKING
+    ===================================================== */
+
+    $booking_stmt = $conn->prepare("
         INSERT INTO bookings
-
         (
             booking_number,
             booking_reference,
             user_id,
             showtime_id,
             total_amount,
-            booking_status,
-            payment_status
+            booking_status
         )
-
         VALUES
-        (
-            ?,
-            ?,
-            ?,
-            ?,
-            ?,
-            ?,
-            ?
-        )
-
-    ";
-
-
-    $booking_stmt =
-        $conn->prepare($booking_sql);
+        (?, ?, ?, ?, ?, ?)
+    ");
 
 
     if (!$booking_stmt) {
 
         throw new Exception(
-            "Booking prepare error: " .
+            "Booking insert error: " .
             $conn->error
         );
 
@@ -797,37 +572,20 @@ try {
 
 
     $booking_stmt->bind_param(
-        "ssi dss",
+        "ssiids",
         $booking_number,
         $booking_reference,
         $user_id,
         $showtime_id,
         $total_amount,
-        $booking_status,
-        $payment_status
-    );
-
-
-    /*
-    Remove accidental spaces from bind type.
-    */
-
-    $booking_stmt->bind_param(
-        "ssiidss",
-        $booking_number,
-        $booking_reference,
-        $user_id,
-        $showtime_id,
-        $total_amount,
-        $booking_status,
-        $payment_status
+        $booking_status
     );
 
 
     if (!$booking_stmt->execute()) {
 
         throw new Exception(
-            "Booking could not be saved: " .
+            "Booking could not be created: " .
             $booking_stmt->error
         );
 
@@ -845,51 +603,41 @@ try {
        INSERT BOOKING SEATS
     ===================================================== */
 
-    $seat_stmt = $conn->prepare("
-
+    $booking_seat_stmt = $conn->prepare("
         INSERT INTO booking_seats
         (
             booking_id,
             seat_id
         )
-
         VALUES
-        (
-            ?,
-            ?
-        )
-
+        (?, ?)
     ");
 
 
-    if (!$seat_stmt) {
+    if (!$booking_seat_stmt) {
 
         throw new Exception(
-            "Booking seats prepare error: " .
+            "Booking seats query error: " .
             $conn->error
         );
 
     }
 
 
-    foreach ($selected_seats as $seat) {
+    foreach ($seat_ids as $seat_id) {
 
-        $seat_id =
-            (int)$seat['id'];
-
-
-        $seat_stmt->bind_param(
+        $booking_seat_stmt->bind_param(
             "ii",
             $booking_id,
             $seat_id
         );
 
 
-        if (!$seat_stmt->execute()) {
+        if (!$booking_seat_stmt->execute()) {
 
             throw new Exception(
-                "Seat booking failed: " .
-                $seat_stmt->error
+                "Seat could not be booked: " .
+                $booking_seat_stmt->error
             );
 
         }
@@ -897,55 +645,56 @@ try {
     }
 
 
-    $seat_stmt->close();
+    $booking_seat_stmt->close();
+
+
+    /* =====================================================
+       GENERATE TRANSACTION ID
+    ===================================================== */
+
+    $transaction_id =
+        "TXN" .
+        date("YmdHis") .
+        strtoupper(
+            substr(
+                bin2hex(
+                    random_bytes(4)
+                ),
+                0,
+                8
+            )
+        );
+
+
+    /* =====================================================
+       PAYMENT STATUS
+    ===================================================== */
+
+    $payment_status = "paid";
 
 
     /* =====================================================
        INSERT PAYMENT
     ===================================================== */
 
-    /*
-    IMPORTANT:
-
-    Your payments table uses:
-
-    transaction_id
-
-    NOT payment_id.
-    */
-
-    $payment_sql = "
-
+    $payment_stmt = $conn->prepare("
         INSERT INTO payments
-
         (
-            booking_id,
             transaction_id,
-            payment_method,
+            booking_id,
             amount,
+            payment_method,
             payment_status
         )
-
         VALUES
-        (
-            ?,
-            ?,
-            ?,
-            ?,
-            ?
-        )
-
-    ";
-
-
-    $payment_stmt =
-        $conn->prepare($payment_sql);
+        (?, ?, ?, ?, ?)
+    ");
 
 
     if (!$payment_stmt) {
 
         throw new Exception(
-            "Payment prepare error: " .
+            "Payment query error: " .
             $conn->error
         );
 
@@ -953,11 +702,11 @@ try {
 
 
     $payment_stmt->bind_param(
-        "issds",
-        $booking_id,
+        "sidss",
         $transaction_id,
-        $payment_method,
+        $booking_id,
         $total_amount,
+        $payment_method_name,
         $payment_status
     );
 
@@ -981,292 +730,490 @@ try {
 
     $conn->commit();
 
-}
-catch (Exception $e) {
+
+} catch (Throwable $e) {
 
     $conn->rollback();
 
-
-    die("
-        <div style='
+    die(
+        "<div style='
             font-family:Arial;
             text-align:center;
             padding:60px;
-            background:#100b18;
-            color:white;
-            min-height:100vh;
         '>
-
-            <h2 style='color:#ff7777;'>
+            <h2 style='color:#c0392b;'>
                 Booking Failed
             </h2>
 
-            <p style='
-                max-width:700px;
-                margin:20px auto;
-                line-height:1.7;
-            '>
-                " .
-                htmlspecialchars(
-                    $e->getMessage()
-                )
-                . "
-            </p>
+            <p>" .
+            htmlspecialchars(
+                $e->getMessage(),
+                ENT_QUOTES,
+                'UTF-8'
+            ) .
+            "</p>
 
             <br>
 
-            <a
-                href='javascript:history.back()'
-                style='
-                    background:#f4c430;
-                    color:#21102f;
-                    padding:12px 25px;
-                    border-radius:8px;
-                    text-decoration:none;
-                    font-weight:bold;
-                '
-            >
+            <a href='javascript:history.back()'
+               style='
+                   display:inline-block;
+                   padding:12px 25px;
+                   background:#f4c430;
+                   color:#21102f;
+                   text-decoration:none;
+                   border-radius:8px;
+                   font-weight:bold;
+               '>
                 ← Go Back
             </a>
 
-        </div>
-    ");
+        </div>"
+    );
 
 }
 
 
 /* =========================================================
-   GENERATE QR CODE
+   CREATE TICKETS FOLDER
 ========================================================= */
 
-/*
-|--------------------------------------------------------------------------
-| QR CONTENT
-|--------------------------------------------------------------------------
-|
-| QR will contain ONLY the booking number.
-|
-| Example:
-|
-| 20260822153745123
-|
-*/
-
-$qr_data =
-    $booking_number;
+$tickets_folder =
+    __DIR__ . "/tickets";
 
 
-/*
-|--------------------------------------------------------------------------
-| Temporary QR filename
-|--------------------------------------------------------------------------
-*/
+if (!is_dir($tickets_folder)) {
+
+    if (!mkdir(
+        $tickets_folder,
+        0777,
+        true
+    )) {
+
+        die(
+            "Unable to create tickets folder."
+        );
+
+    }
+
+}
+
+
+/* =========================================================
+   QR CODE LIBRARY
+========================================================= */
+
+$qr_library =
+    __DIR__ . "/phpqrcode/qrlib.php";
+
+
+if (!file_exists($qr_library)) {
+
+    die(
+        "QR library not found.<br><br>" .
+        "Please make sure this file exists:<br>" .
+        htmlspecialchars($qr_library)
+    );
+
+}
+
+
+require_once $qr_library;
+
+
+if (!class_exists("QRcode")) {
+
+    die(
+        "QRcode class was not loaded."
+    );
+
+}
+
+
+/* =========================================================
+   QR FILE NAME
+========================================================= */
+
+$clean_booking_number =
+    preg_replace(
+        '/[^A-Za-z0-9_-]/',
+        '',
+        $booking_number
+    );
+
 
 $qr_filename =
-    'ticketflix_qr_' .
-    $booking_number .
-    '.png';
+    "ticketflix_qr_" .
+    $clean_booking_number .
+    ".png";
 
 
 $qr_path =
-    sys_get_temp_dir() .
+    $tickets_folder .
     DIRECTORY_SEPARATOR .
     $qr_filename;
 
 
-/*
-|--------------------------------------------------------------------------
-| QR OPTIONS
-|--------------------------------------------------------------------------
-*/
+/* =========================================================
+   QR CONTENT
+========================================================= */
+
+$qr_data =
+    "TicketFlix\n" .
+    "Booking Number: " .
+    $booking_number . "\n" .
+    "Booking Reference: " .
+    $booking_reference . "\n" .
+    "Transaction ID: " .
+    $transaction_id . "\n" .
+    "Movie: " .
+    $movie_name . "\n" .
+    "Theater: " .
+    $theater_name . "\n" .
+    "Screen: " .
+    $screen_name . "\n" .
+    "Date: " .
+    $show_date . "\n" .
+    "Time: " .
+    $show_time . "\n" .
+    "Seats: " .
+    $seat_list;
+
+
+/* =========================================================
+   GENERATE QR
+========================================================= */
+
+$qr_generated = false;
+
 
 try {
 
-    $options = new QROptions();
+    QRcode::png(
+        $qr_data,
+        $qr_path,
+        QR_ECLEVEL_M,
+        8,
+        2
+    );
 
-    /*
-    PNG output
-    */
-    $options->outputType = 'png';
-
-    /*
-    QR size
-    */
-    $options->scale = 10;
-
-    /*
-    Error correction
-    */
-    $options->eccLevel = 'L';
-
-
-    /*
-    Generate QR
-    */
-    $qrCode =
-        new QRCode($options);
-
-
-    $qr_output =
-        $qrCode->render($qr_data);
-
-
-    /*
-    chillerlan can return a data URI.
-
-    Example:
-
-    data:image/png;base64,AAAA...
-    */
 
     if (
-        is_string($qr_output) &&
-        strpos(
-            $qr_output,
-            'data:image'
-        ) === 0
+        file_exists($qr_path) &&
+        filesize($qr_path) > 0
     ) {
 
-        $parts =
-            explode(
-                ',',
-                $qr_output,
-                2
-            );
+        $image_info =
+            @getimagesize($qr_path);
 
 
-        if (
-            isset($parts[1])
-        ) {
+        if ($image_info !== false) {
 
-            $qr_binary =
-                base64_decode(
-                    $parts[1]
-                );
+            $qr_generated = true;
 
+        } else {
 
-            if (
-                $qr_binary === false
-            ) {
-
-                throw new Exception(
-                    "Could not decode QR image."
-                );
-
-            }
-
-
-            file_put_contents(
-                $qr_path,
-                $qr_binary
-            );
+            @unlink($qr_path);
 
         }
 
     }
-    else {
 
-        /*
-        Some versions may return
-        raw image data.
-        */
-
-        file_put_contents(
-            $qr_path,
-            $qr_output
-        );
-
-    }
-
-
-    /*
-    Check QR file
-    */
-
-    if (
-        !file_exists($qr_path) ||
-        filesize($qr_path) <= 0
-    ) {
-
-        throw new Exception(
-            "QR code file was not created."
-        );
-
-    }
-
-    $qr_generated = true;
-
-}
-catch (Throwable $qr_error) {
+} catch (Throwable $e) {
 
     $qr_generated = false;
 
-    $qr_error_message =
-        $qr_error->getMessage();
+    error_log(
+        "TicketFlix QR Error: " .
+        $e->getMessage()
+    );
 
 }
 
 
 /* =========================================================
-   SEND EMAIL WITH QR CODE
+   QR CID
 ========================================================= */
 
-$mail_sent = false;
+$qr_cid =
+    "ticketflix_qr_" .
+    $clean_booking_number;
 
-$mail_error = '';
+
+/* =========================================================
+   HTML ESCAPING
+========================================================= */
+
+$safe_user_name =
+    htmlspecialchars(
+        $user_name,
+        ENT_QUOTES,
+        'UTF-8'
+    );
+
+
+$safe_booking_number =
+    htmlspecialchars(
+        $booking_number,
+        ENT_QUOTES,
+        'UTF-8'
+    );
+
+
+$safe_booking_reference =
+    htmlspecialchars(
+        $booking_reference,
+        ENT_QUOTES,
+        'UTF-8'
+    );
+
+
+$safe_transaction_id =
+    htmlspecialchars(
+        $transaction_id,
+        ENT_QUOTES,
+        'UTF-8'
+    );
+
+
+$safe_movie_name =
+    htmlspecialchars(
+        $movie_name,
+        ENT_QUOTES,
+        'UTF-8'
+    );
+
+
+$safe_theater_name =
+    htmlspecialchars(
+        $theater_name,
+        ENT_QUOTES,
+        'UTF-8'
+    );
+
+
+$safe_theater_address =
+    htmlspecialchars(
+        $theater_address,
+        ENT_QUOTES,
+        'UTF-8'
+    );
+
+
+$safe_theater_city =
+    htmlspecialchars(
+        $theater_city,
+        ENT_QUOTES,
+        'UTF-8'
+    );
+
+
+$safe_theater_state =
+    htmlspecialchars(
+        $theater_state,
+        ENT_QUOTES,
+        'UTF-8'
+    );
+
+
+$safe_screen_name =
+    htmlspecialchars(
+        $screen_name,
+        ENT_QUOTES,
+        'UTF-8'
+    );
+
+
+$safe_show_date =
+    htmlspecialchars(
+        date(
+            "D, d M Y",
+            strtotime($show_date)
+        ),
+        ENT_QUOTES,
+        'UTF-8'
+    );
+
+
+$safe_show_time =
+    htmlspecialchars(
+        date(
+            "h:i A",
+            strtotime($show_time)
+        ),
+        ENT_QUOTES,
+        'UTF-8'
+    );
+
+
+$safe_seat_list =
+    htmlspecialchars(
+        $seat_list,
+        ENT_QUOTES,
+        'UTF-8'
+    );
+
+
+$safe_payment_method =
+    htmlspecialchars(
+        $payment_method_name,
+        ENT_QUOTES,
+        'UTF-8'
+    );
+
+
+/* =========================================================
+   QR HTML
+========================================================= */
+
+if (
+    $qr_generated &&
+    file_exists($qr_path)
+) {
+
+    $qr_html = "
+
+        <div style='
+            text-align:center;
+            margin:25px 0;
+            padding:20px;
+            background:#fffaf0;
+            border:1px solid #f4c430;
+            border-radius:12px;
+        '>
+
+            <h3 style='
+                color:#21102f;
+                margin:0 0 15px 0;
+            '>
+                &#127903; Your QR Ticket
+            </h3>
+
+            <p style='
+                color:#666;
+                margin-bottom:15px;
+            '>
+                Show this QR code at the theater.
+            </p>
+
+            <img
+                src='cid:$qr_cid'
+                alt='TicketFlix QR Code'
+                width='220'
+                height='220'
+                style='
+                    display:block;
+                    margin:0 auto;
+                    width:220px;
+                    height:220px;
+                    border:8px solid white;
+                    border-radius:8px;
+                '
+            >
+
+            <p style='
+                margin:15px 0 0;
+                color:#21102f;
+                font-weight:bold;
+            '>
+                Booking No: $safe_booking_number
+            </p>
+
+        </div>
+
+    ";
+
+} else {
+
+    $qr_html = "
+
+        <div style='
+            text-align:center;
+            margin:25px 0;
+            padding:20px;
+            background:#fffaf0;
+            border:1px solid #f4c430;
+            border-radius:12px;
+        '>
+
+            <h3 style='
+                color:#21102f;
+                margin:0 0 15px 0;
+            '>
+                &#127903; Your QR Ticket
+            </h3>
+
+            <p style='color:red;'>
+                QR code could not be generated.
+            </p>
+
+        </div>
+
+    ";
+
+}
+
+
+/* =========================================================
+   SEND EMAIL
+========================================================= */
+
+$mail = new PHPMailer(true);
+
+$email_error = null;
 
 
 try {
 
-    $mail = new PHPMailer(true);
-
-
-    /*
-    ---------------------------------------------------------
-    SMTP
-    ---------------------------------------------------------
-    */
+    /* =====================================================
+       SMTP
+    ===================================================== */
 
     $mail->isSMTP();
 
-    $mail->Host =
-        'smtp.gmail.com';
+    $mail->Host = "smtp.gmail.com";
 
-    $mail->SMTPAuth =
-        true;
-
-
-    /*
-    IMPORTANT:
-    Replace these with your Gmail
-    and Gmail App Password.
-    */
+    $mail->SMTPAuth = true;
 
     $mail->Username =
-        'YOUR_GMAIL@gmail.com';
+        "ticketflix40@gmail.com";
+
+    /*
+       PUT YOUR EXISTING GMAIL APP PASSWORD HERE
+    */
 
     $mail->Password =
-        'YOUR_GMAIL_APP_PASSWORD';
+        "whus euir nvbo tbbu";
 
 
     $mail->SMTPSecure =
         PHPMailer::ENCRYPTION_STARTTLS;
 
-    $mail->Port =
-        587;
+    $mail->Port = 587;
 
 
-    /*
-    ---------------------------------------------------------
-    EMAIL
-    ---------------------------------------------------------
-    */
+    /* =====================================================
+       UTF-8 FIX
+    ===================================================== */
+
+    $mail->CharSet = "UTF-8";
+
+    $mail->Encoding = "base64";
+
+
+    /* =====================================================
+       FROM
+    ===================================================== */
 
     $mail->setFrom(
-        'YOUR_GMAIL@gmail.com',
-        'TicketFlix'
+        "ticketflix40@gmail.com",
+        "TicketFlix"
     );
 
+
+    /* =====================================================
+       TO
+    ===================================================== */
 
     $mail->addAddress(
         $user_email,
@@ -1274,383 +1221,546 @@ try {
     );
 
 
-    $mail->isHTML(true);
-
-
-    $mail->Subject =
-        'TicketFlix Booking Confirmation - '
-        . $booking_number;
-
-
-    /*
-    ---------------------------------------------------------
-    ATTACH QR
-    ---------------------------------------------------------
-    */
+    /* =====================================================
+       INLINE QR
+    ===================================================== */
 
     if (
         $qr_generated &&
         file_exists($qr_path)
     ) {
 
-        $mail->addAttachment(
+        $mail->addEmbeddedImage(
             $qr_path,
-            'TicketFlix_QR_' .
-            $booking_number .
-            '.png'
+            $qr_cid,
+            "TicketFlix_QR.png",
+            "base64",
+            "image/png"
         );
 
     }
 
 
-    /*
-    ---------------------------------------------------------
-    EMAIL HTML
-    ---------------------------------------------------------
-    */
+    /* =====================================================
+       SUBJECT
+    ===================================================== */
 
-    $safe_movie =
-        htmlspecialchars(
-            $showtime['movie_name']
-        );
-
-    $safe_theater =
-        htmlspecialchars(
-            $showtime['theater_name']
-        );
-
-    $safe_screen =
-        htmlspecialchars(
-            $showtime['screen_name']
-        );
-
-    $safe_booking_number =
-        htmlspecialchars(
-            $booking_number
-        );
-
-    $safe_reference =
-        htmlspecialchars(
-            $booking_reference
-        );
-
-    $safe_transaction =
-        htmlspecialchars(
-            $transaction_id
-        );
-
-    $safe_method =
-        htmlspecialchars(
-            strtoupper(
-                $payment_method
-            )
-        );
+    $mail->Subject =
+        "TicketFlix Booking Confirmed - " .
+        $booking_number;
 
 
-    $seat_text =
-        htmlspecialchars(
-            implode(
-                ', ',
-                $seat_labels
-            )
-        );
+    $mail->isHTML(true);
 
+
+    /* =====================================================
+       EMAIL BODY
+    ===================================================== */
 
     $mail->Body = "
 
-    <!DOCTYPE html>
+<!DOCTYPE html>
 
-    <html>
+<html>
 
-    <body style='
+<head>
+
+<meta charset='UTF-8'>
+
+<title>TicketFlix Booking Confirmation</title>
+
+</head>
+
+<body style='
+    margin:0;
+    padding:0;
+    background:#f5f2f7;
+    font-family:Arial,Helvetica,sans-serif;
+'>
+
+
+<div style='
+    max-width:650px;
+    margin:30px auto;
+    background:#ffffff;
+    border-radius:15px;
+    overflow:hidden;
+'>
+
+
+<!-- HEADER -->
+
+<div style='
+    background:#21102f;
+    padding:25px;
+    text-align:center;
+'>
+
+    <h1 style='
+        color:#f4c430;
         margin:0;
-        padding:0;
-        background:#f4f1f7;
-        font-family:Arial,sans-serif;
+        font-size:30px;
     '>
+        &#127909; TicketFlix
+    </h1>
 
-        <div style='
-            max-width:650px;
-            margin:30px auto;
-            background:white;
-            border-radius:15px;
-            overflow:hidden;
-            box-shadow:0 5px 25px rgba(0,0,0,.12);
-        '>
+    <p style='
+        color:#ffffff;
+        margin:8px 0 0;
+    '>
+        Movie Ticket Booking
+    </p>
 
-            <div style='
-                background:#21102f;
-                padding:25px;
-                text-align:center;
-            '>
-
-                <h1 style='
-                    color:white;
-                    margin:0;
-                    font-size:30px;
-                '>
-                    Ticket<span style='color:#f4c430;'>
-                        Flix
-                    </span>
-                </h1>
-
-            </div>
+</div>
 
 
-            <div style='padding:30px;'>
+<!-- CONTENT -->
 
-                <h2 style='
-                    color:#21102f;
-                    margin-top:0;
-                '>
-                    🎉 Booking Confirmed!
-                </h2>
+<div style='padding:30px;'>
 
 
-                <p style='color:#555;'>
-                    Hello
-                    <strong>
-                        " . htmlspecialchars($user_name) . "
-                    </strong>,
-                </p>
+<h2 style='
+    color:#21102f;
+    margin-top:0;
+'>
+    &#127881; Booking Confirmed!
+</h2>
 
 
-                <p style='color:#555;line-height:1.6;'>
-
-                    Your TicketFlix movie ticket has been
-                    successfully booked.
-
-                </p>
-
-
-                <div style='
-                    background:#f7f1fb;
-                    padding:20px;
-                    border-radius:12px;
-                    margin:20px 0;
-                '>
-
-                    <p>
-                        <strong>Movie:</strong>
-                        $safe_movie
-                    </p>
-
-                    <p>
-                        <strong>Theater:</strong>
-                        $safe_theater
-                    </p>
-
-                    <p>
-                        <strong>Screen:</strong>
-                        $safe_screen
-                    </p>
-
-                    <p>
-                        <strong>Date:</strong>
-                        " .
-                        date(
-                            "d M Y",
-                            strtotime(
-                                $showtime['show_date']
-                            )
-                        )
-                        . "
-                    </p>
-
-                    <p>
-                        <strong>Time:</strong>
-                        " .
-                        date(
-                            "h:i A",
-                            strtotime(
-                                $showtime['show_time']
-                            )
-                        )
-                        . "
-                    </p>
-
-                    <p>
-                        <strong>Seats:</strong>
-                        $seat_text
-                    </p>
-
-                    <p>
-                        <strong>Total Paid:</strong>
-                        ₹" .
-                        number_format(
-                            $total_amount,
-                            2
-                        )
-                        . "
-                    </p>
-
-                </div>
+<p style='
+    color:#444;
+    font-size:16px;
+'>
+    Hello <strong>$safe_user_name</strong>,
+</p>
 
 
-                <div style='
-                    background:#21102f;
-                    color:white;
-                    padding:20px;
-                    border-radius:12px;
-                    margin:20px 0;
-                '>
-
-                    <p style='margin:8px 0;'>
-                        <strong>
-                            Booking Number:
-                        </strong>
-                        <br>
-
-                        <span style='
-                            color:#f4c430;
-                            font-size:20px;
-                        '>
-                            $safe_booking_number
-                        </span>
-                    </p>
+<p style='
+    color:#555;
+    line-height:1.6;
+'>
+    Your TicketFlix movie ticket has been successfully booked.
+</p>
 
 
-                    <p style='margin:8px 0;'>
-                        <strong>
-                            Booking Reference:
-                        </strong>
-                        <br>
-                        $safe_reference
-                    </p>
+<!-- BOOKING NUMBER -->
+
+<div style='
+    margin:20px 0;
+    padding:18px;
+    background:#21102f;
+    border-radius:10px;
+    text-align:center;
+'>
+
+    <p style='
+        color:#ffffff;
+        margin:0 0 8px;
+        font-weight:bold;
+    '>
+        Booking Number
+    </p>
+
+    <span style='
+        color:#f4c430;
+        font-size:22px;
+        font-weight:bold;
+    '>
+        $safe_booking_number
+    </span>
+
+</div>
 
 
-                    <p style='margin:8px 0;'>
-                        <strong>
-                            Transaction ID:
-                        </strong>
-                        <br>
-                        $safe_transaction
-                    </p>
+<!-- QR -->
+
+$qr_html
 
 
-                    <p style='margin:8px 0;'>
-                        <strong>
-                            Payment Method:
-                        </strong>
-                        $safe_method
-                    </p>
+<!-- DETAILS -->
 
-                </div>
-
-
-                <div style='
-                    text-align:center;
-                    padding:20px;
-                    background:#fffaf0;
-                    border:1px solid #f4c430;
-                    border-radius:12px;
-                '>
-
-                    <h3 style='
-                        color:#21102f;
-                        margin-top:0;
-                    '>
-                        🎟️ Your QR Ticket
-                    </h3>
-
-                    <p style='color:#666;'>
-                        Your QR code is attached to this email.
-                    </p>
-
-                    <p style='color:#666;'>
-                        Show the QR code at the theater.
-                    </p>
-
-                </div>
+<h3 style='
+    color:#21102f;
+    border-bottom:2px solid #f4c430;
+    padding-bottom:8px;
+'>
+    &#127903; Booking Details
+</h3>
 
 
-                <p style='
-                    margin-top:25px;
-                    color:#777;
-                    text-align:center;
-                    font-size:13px;
-                '>
-
-                    Thank you for booking with TicketFlix! 🎬🍿
-
-                </p>
-
-            </div>
-
-        </div>
-
-    </body>
-
-    </html>
-    ";
+<table style='
+    width:100%;
+    border-collapse:collapse;
+'>
 
 
-    /*
-    Plain text alternative
-    */
+<tr>
+
+<td style='
+    padding:10px;
+    font-weight:bold;
+    color:#555;
+'>
+    Booking Reference
+</td>
+
+<td style='
+    padding:10px;
+    color:#21102f;
+'>
+    $safe_booking_reference
+</td>
+
+</tr>
+
+
+<tr style='background:#fafafa;'>
+
+<td style='
+    padding:10px;
+    font-weight:bold;
+    color:#555;
+'>
+    Transaction ID
+</td>
+
+<td style='
+    padding:10px;
+    color:#21102f;
+'>
+    $safe_transaction_id
+</td>
+
+</tr>
+
+
+<tr>
+
+<td style='
+    padding:10px;
+    font-weight:bold;
+    color:#555;
+'>
+    Payment Method
+</td>
+
+<td style='
+    padding:10px;
+    color:#21102f;
+'>
+    $safe_payment_method
+</td>
+
+</tr>
+
+
+<tr style='background:#fafafa;'>
+
+<td style='
+    padding:10px;
+    font-weight:bold;
+    color:#555;
+'>
+    Movie
+</td>
+
+<td style='
+    padding:10px;
+    color:#21102f;
+    font-weight:bold;
+'>
+    $safe_movie_name
+</td>
+
+</tr>
+
+
+<tr>
+
+<td style='
+    padding:10px;
+    font-weight:bold;
+    color:#555;
+'>
+    Theater
+</td>
+
+<td style='
+    padding:10px;
+    color:#21102f;
+'>
+    $safe_theater_name
+    <br>
+
+    <span style='
+        color:#777;
+        font-size:13px;
+    '>
+        $safe_theater_address
+        <br>
+        $safe_theater_city, $safe_theater_state
+    </span>
+
+</td>
+
+</tr>
+
+
+<tr style='background:#fafafa;'>
+
+<td style='
+    padding:10px;
+    font-weight:bold;
+    color:#555;
+'>
+    Screen
+</td>
+
+<td style='
+    padding:10px;
+    color:#21102f;
+'>
+    $safe_screen_name
+</td>
+
+</tr>
+
+
+<tr>
+
+<td style='
+    padding:10px;
+    font-weight:bold;
+    color:#555;
+'>
+    Date
+</td>
+
+<td style='
+    padding:10px;
+    color:#21102f;
+'>
+    $safe_show_date
+</td>
+
+</tr>
+
+
+<tr style='background:#fafafa;'>
+
+<td style='
+    padding:10px;
+    font-weight:bold;
+    color:#555;
+'>
+    Time
+</td>
+
+<td style='
+    padding:10px;
+    color:#21102f;
+'>
+    $safe_show_time
+</td>
+
+</tr>
+
+
+<tr>
+
+<td style='
+    padding:10px;
+    font-weight:bold;
+    color:#555;
+'>
+    Seats
+</td>
+
+<td style='
+    padding:10px;
+    color:#21102f;
+    font-weight:bold;
+'>
+    $safe_seat_list
+</td>
+
+</tr>
+
+
+<tr style='background:#fafafa;'>
+
+<td style='
+    padding:15px 10px;
+    font-weight:bold;
+    color:#555;
+'>
+    Total Paid
+</td>
+
+<td style='
+    padding:15px 10px;
+    color:#21102f;
+    font-weight:bold;
+    font-size:20px;
+'>
+    &#8377;" .
+    number_format(
+        $total_amount,
+        2
+    ) .
+"
+</td>
+
+</tr>
+
+
+</table>
+
+
+<div style='
+    margin-top:25px;
+    padding:15px;
+    background:#f8f4fb;
+    border-radius:8px;
+    text-align:center;
+'>
+
+<p style='
+    margin:0;
+    color:#555;
+'>
+    Please show the QR code above at the theater.
+</p>
+
+</div>
+
+
+</div>
+
+
+<!-- FOOTER -->
+
+<div style='
+    background:#21102f;
+    padding:18px;
+    text-align:center;
+'>
+
+<p style='
+    margin:0;
+    color:#f4c430;
+    font-weight:bold;
+'>
+    Thank you for choosing TicketFlix! &#127909;
+</p>
+
+</div>
+
+
+</div>
+
+</body>
+
+</html>
+";
+
+
+    /* =====================================================
+       PLAIN TEXT
+    ===================================================== */
 
     $mail->AltBody =
-        "TicketFlix Booking Confirmation\n\n"
-        . "Booking Number: "
-        . $booking_number
-        . "\n"
-        . "Booking Reference: "
-        . $booking_reference
-        . "\n"
-        . "Transaction ID: "
-        . $transaction_id
-        . "\n"
-        . "Movie: "
-        . $showtime['movie_name']
-        . "\n"
-        . "Seats: "
-        . implode(
-            ', ',
-            $seat_labels
-        )
-        . "\n"
-        . "Total: ₹"
-        . number_format(
+        "TicketFlix Booking Confirmed\n\n" .
+
+        "Hello " .
+        $user_name .
+        ",\n\n" .
+
+        "Booking Number: " .
+        $booking_number .
+        "\n" .
+
+        "Booking Reference: " .
+        $booking_reference .
+        "\n" .
+
+        "Transaction ID: " .
+        $transaction_id .
+        "\n" .
+
+        "Payment Method: " .
+        $payment_method_name .
+        "\n" .
+
+        "Movie: " .
+        $movie_name .
+        "\n" .
+
+        "Theater: " .
+        $theater_name .
+        "\n" .
+
+        "Screen: " .
+        $screen_name .
+        "\n" .
+
+        "Date: " .
+        $show_date .
+        "\n" .
+
+        "Time: " .
+        $show_time .
+        "\n" .
+
+        "Seats: " .
+        $seat_list .
+        "\n\n" .
+
+        "Total Paid: INR " .
+        number_format(
             $total_amount,
             2
-        )
-        . "\n\n"
-        . "Your QR ticket is attached.";
+        ) .
+        "\n\n" .
+
+        "Please show your QR code at the theater.";
 
 
-    /*
-    ---------------------------------------------------------
-    SEND
-    ---------------------------------------------------------
-    */
+    /* =====================================================
+       SEND
+    ===================================================== */
 
     $mail->send();
 
-    $mail_sent = true;
 
-}
-catch (Throwable $mail_exception) {
+} catch (Exception $e) {
 
-    $mail_sent = false;
-
-    $mail_error =
-        $mail_exception->getMessage();
+    $email_error =
+        $mail->ErrorInfo;
 
 }
 
 
 /* =========================================================
-   DELETE TEMPORARY QR AFTER EMAIL
+   SAVE SESSION
 ========================================================= */
 
-if (
-    !empty($qr_path) &&
-    file_exists($qr_path)
-) {
+$_SESSION['booking_id'] =
+    $booking_id;
 
-    unlink($qr_path);
+$_SESSION['booking_number'] =
+    $booking_number;
 
-}
+$_SESSION['booking_reference'] =
+    $booking_reference;
+
+$_SESSION['transaction_id'] =
+    $transaction_id;
+
+
+/* =========================================================
+   SUCCESS PAGE
+========================================================= */
 
 ?>
 
@@ -1662,28 +1772,25 @@ if (
 
 <meta charset="UTF-8">
 
-<meta
-    name="viewport"
-    content="width=device-width, initial-scale=1.0"
->
+<meta name="viewport"
+      content="width=device-width, initial-scale=1.0">
 
-<title>
-    Payment Successful | TicketFlix
-</title>
+<meta http-equiv="refresh"
+      content="3;url=success.php?booking_id=<?php
+          echo urlencode($booking_id);
+      ?>">
 
+<title>TicketFlix - Booking Confirmed</title>
 
 <style>
 
 * {
     box-sizing:border-box;
-    margin:0;
-    padding:0;
 }
-
 
 body {
 
-    min-height:100vh;
+    margin:0;
 
     font-family:
         Arial,
@@ -1698,7 +1805,7 @@ body {
             #09060f
         );
 
-    color:white;
+    min-height:100vh;
 
     display:flex;
 
@@ -1706,322 +1813,61 @@ body {
 
     justify-content:center;
 
-    padding:25px;
 }
 
+.container {
 
-.success-card {
+    width:90%;
 
-    width:min(750px,100%);
+    max-width:600px;
 
-    background:
-        linear-gradient(
-            145deg,
-            #321452,
-            #1d0d31
-        );
+    background:white;
 
-    border:
-        1px solid #634085;
-
-    border-radius:25px;
-
-    padding:45px 35px;
+    padding:40px;
 
     text-align:center;
 
+    border-radius:18px;
+
     box-shadow:
-        0 25px 70px
-        rgba(0,0,0,.4);
+        0 20px 50px
+        rgba(0,0,0,.35);
+
 }
-
-
-.success-icon {
-
-    width:90px;
-
-    height:90px;
-
-    margin:0 auto 22px;
-
-    border-radius:50%;
-
-    background:#f4c430;
-
-    color:#241033;
-
-    display:flex;
-
-    align-items:center;
-
-    justify-content:center;
-
-    font-size:48px;
-
-    font-weight:bold;
-}
-
 
 h1 {
 
-    font-size:32px;
+    color:#21102f;
 
-    margin-bottom:12px;
 }
 
-
-h1 span {
-
-    color:#f4c430;
-}
-
-
-.success-text {
-
-    color:#c9bfd3;
-
-    margin-bottom:28px;
-
-    line-height:1.6;
-}
-
-
-/* BOOKING NUMBER */
-
-.booking-number {
-
-    background:
-        rgba(255,255,255,.06);
-
-    border:
-        1px solid
-        rgba(255,255,255,.1);
-
-    border-radius:13px;
-
-    padding:18px;
-
-    margin-bottom:22px;
-}
-
-
-.booking-number small {
-
-    display:block;
-
-    color:#9d94a7;
-
-    margin-bottom:7px;
-}
-
-
-.booking-number strong {
+.booking {
 
     color:#f4c430;
 
-    font-size:23px;
-
-    letter-spacing:2px;
-}
-
-
-/* DETAILS */
-
-.details {
-
-    display:grid;
-
-    grid-template-columns:1fr 1fr;
-
-    gap:12px;
-
-    margin-bottom:22px;
-}
-
-
-.detail-box {
-
-    background:
-        rgba(255,255,255,.05);
-
-    border-radius:10px;
-
-    padding:14px;
-
-    text-align:left;
-}
-
-
-.detail-box small {
-
-    display:block;
-
-    color:#91879b;
-
-    margin-bottom:6px;
-
-    font-size:11px;
-}
-
-
-.detail-box strong {
-
-    font-size:14px;
-
-    word-break:break-word;
-}
-
-
-/* EMAIL */
-
-.email-box {
+    background:#21102f;
 
     padding:15px;
 
     border-radius:10px;
 
-    margin-bottom:12px;
+    font-size:24px;
 
-    font-size:13px;
+    font-weight:bold;
 
-    line-height:1.6;
+    word-break:break-all;
+
 }
 
+.success {
 
-.mail-success {
+    color:#188038;
 
-    background:
-        rgba(46,204,113,.12);
-
-    border:
-        1px solid
-        rgba(46,204,113,.3);
-
-    color:#72e6a0;
 }
 
+.error {
 
-.mail-failed {
-
-    background:
-        rgba(255,100,100,.10);
-
-    border:
-        1px solid
-        rgba(255,100,100,.25);
-
-    color:#ff9999;
-}
-
-
-.qr-success {
-
-    background:
-        rgba(46,204,113,.10);
-
-    border:
-        1px solid
-        rgba(46,204,113,.25);
-
-    color:#72e6a0;
-
-    padding:12px;
-
-    border-radius:9px;
-
-    margin-bottom:12px;
-
-    font-size:13px;
-}
-
-
-.qr-failed {
-
-    background:
-        rgba(255,100,100,.10);
-
-    border:
-        1px solid
-        rgba(255,100,100,.25);
-
-    color:#ff9999;
-
-    padding:12px;
-
-    border-radius:9px;
-
-    margin-bottom:12px;
-
-    font-size:13px;
-}
-
-
-.debug-box {
-
-    margin-top:15px;
-
-    padding:12px;
-
-    background:
-        rgba(255,255,255,.04);
-
-    border-radius:8px;
-
-    color:#aaa;
-
-    font-size:11px;
-
-    text-align:left;
-
-    word-break:break-word;
-}
-
-
-.home-btn {
-
-    display:inline-block;
-
-    padding:13px 28px;
-
-    border-radius:30px;
-
-    background:#f4c430;
-
-    color:#241033;
-
-    text-decoration:none;
-
-    font-weight:800;
-
-    margin-top:10px;
-}
-
-
-.home-btn:hover {
-
-    background:#ffd84f;
-}
-
-
-@media(max-width:550px) {
-
-    .success-card {
-
-        padding:35px 20px;
-
-    }
-
-    h1 {
-
-        font-size:27px;
-
-    }
-
-    .details {
-
-        grid-template-columns:1fr;
-
-    }
+    color:#c0392b;
 
 }
 
@@ -2033,321 +1879,70 @@ h1 span {
 <body>
 
 
-<div class="success-card">
+<div class="container">
 
 
-    <div class="success-icon">
-        ✓
-    </div>
+<h1>
+    &#127881; Booking Confirmed!
+</h1>
 
 
-    <h1>
+<p class="success">
+    Your payment was successful.
+</p>
 
-        Payment
-        <span>Successful!</span>
 
-    </h1>
+<p>
+    Booking Number:
+</p>
 
 
-    <p class="success-text">
+<div class="booking">
 
-        Your TicketFlix booking has been
-        successfully confirmed. 🎬🍿
+<?php
+echo htmlspecialchars(
+    $booking_number,
+    ENT_QUOTES,
+    'UTF-8'
+);
+?>
 
-    </p>
+</div>
 
 
-    <!-- BOOKING NUMBER -->
+<?php if ($qr_generated): ?>
 
-    <div class="booking-number">
+<p class="success">
+    QR ticket generated successfully.
+</p>
 
-        <small>
-            Booking Number
-        </small>
+<?php else: ?>
 
-        <strong>
+<p class="error">
+    QR code could not be generated.
+</p>
 
-            <?= htmlspecialchars(
-                $booking_number
-            ); ?>
+<?php endif; ?>
 
-        </strong>
 
-    </div>
+<?php if ($email_error): ?>
 
+<p class="error">
+    Booking completed, but email could not be sent.
+</p>
 
-    <!-- DETAILS -->
+<?php else: ?>
 
-    <div class="details">
+<p class="success">
+    Confirmation email sent successfully.
+</p>
 
+<?php endif; ?>
 
-        <div class="detail-box">
 
-            <small>
-                Booking Reference
-            </small>
-
-            <strong>
-
-                <?= htmlspecialchars(
-                    $booking_reference
-                ); ?>
-
-            </strong>
-
-        </div>
-
-
-        <div class="detail-box">
-
-            <small>
-                Transaction ID
-            </small>
-
-            <strong>
-
-                <?= htmlspecialchars(
-                    $transaction_id
-                ); ?>
-
-            </strong>
-
-        </div>
-
-
-        <div class="detail-box">
-
-            <small>
-                Movie
-            </small>
-
-            <strong>
-
-                <?= htmlspecialchars(
-                    $showtime['movie_name']
-                ); ?>
-
-            </strong>
-
-        </div>
-
-
-        <div class="detail-box">
-
-            <small>
-                Seats
-            </small>
-
-            <strong>
-
-                <?= htmlspecialchars(
-                    implode(
-                        ', ',
-                        $seat_labels
-                    )
-                ); ?>
-
-            </strong>
-
-        </div>
-
-
-        <div class="detail-box">
-
-            <small>
-                Theater
-            </small>
-
-            <strong>
-
-                <?= htmlspecialchars(
-                    $showtime['theater_name']
-                ); ?>
-
-            </strong>
-
-        </div>
-
-
-        <div class="detail-box">
-
-            <small>
-                Screen
-            </small>
-
-            <strong>
-
-                <?= htmlspecialchars(
-                    $showtime['screen_name']
-                ); ?>
-
-            </strong>
-
-        </div>
-
-
-        <div class="detail-box">
-
-            <small>
-                Date
-            </small>
-
-            <strong>
-
-                <?= date(
-                    "d M Y",
-                    strtotime(
-                        $showtime['show_date']
-                    )
-                ); ?>
-
-            </strong>
-
-        </div>
-
-
-        <div class="detail-box">
-
-            <small>
-                Time
-            </small>
-
-            <strong>
-
-                <?= date(
-                    "h:i A",
-                    strtotime(
-                        $showtime['show_time']
-                    )
-                ); ?>
-
-            </strong>
-
-        </div>
-
-
-        <div class="detail-box">
-
-            <small>
-                Payment Method
-            </small>
-
-            <strong>
-
-                <?= htmlspecialchars(
-                    strtoupper(
-                        $payment_method
-                    )
-                ); ?>
-
-            </strong>
-
-        </div>
-
-
-        <div class="detail-box">
-
-            <small>
-                Total Paid
-            </small>
-
-            <strong>
-
-                ₹<?= number_format(
-                    $total_amount,
-                    2
-                ); ?>
-
-            </strong>
-
-        </div>
-
-
-    </div>
-
-
-    <!-- EMAIL STATUS -->
-
-    <div class="email-box">
-
-        📧 Confirmation email:
-
-        <strong>
-
-            <?= htmlspecialchars(
-                $user_email
-            ); ?>
-
-        </strong>
-
-    </div>
-
-
-    <?php if ($qr_generated): ?>
-
-        <div class="qr-success">
-
-            ✅ QR code generated successfully using
-            your Booking Number.
-
-        </div>
-
-    <?php else: ?>
-
-        <div class="qr-failed">
-
-            ⚠️ QR code could not be generated.
-
-        </div>
-
-    <?php endif; ?>
-
-
-    <?php if ($mail_sent): ?>
-
-        <div class="email-box mail-success">
-
-            ✅ Confirmation email with your QR code
-            was sent successfully!
-
-        </div>
-
-    <?php else: ?>
-
-        <div class="email-box mail-failed">
-
-            ⚠️ Booking was successful, but the
-            confirmation email could not be sent.
-
-        </div>
-
-        <?php if (!empty($mail_error)): ?>
-
-            <div class="debug-box">
-
-                <strong>
-                    Mail Error:
-                </strong>
-
-                <?= htmlspecialchars(
-                    $mail_error
-                ); ?>
-
-            </div>
-
-        <?php endif; ?>
-
-    <?php endif; ?>
-
-
-    <a
-        href="index.php"
-        class="home-btn"
-    >
-
-        🏠 Back to Home
-
-    </a>
+<p>
+    Redirecting to your booking...
+</p>
 
 
 </div>
